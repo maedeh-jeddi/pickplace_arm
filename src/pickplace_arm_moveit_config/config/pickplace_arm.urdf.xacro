@@ -2,6 +2,9 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="pickplace_arm">
     <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
 
+    <!-- Use mock hardware, not Gazebo, when loaded by MoveIt -->
+    <xacro:arg name="use_gazebo" default="false" />
+
     <!-- Import pickplace_arm urdf file -->
     <xacro:include filename="$(find pickplace_arm_description)/urdf/pickplace_arm.urdf.xacro" />
 
