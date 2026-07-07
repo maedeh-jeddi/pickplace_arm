@@ -64,7 +64,7 @@ Expected output: both `joint_state_broadcaster` and `arm_controller` should be `
 - [x] Controller configuration (`ros2_control`)
 - [x] Send trajectory goals to move the arm
 - [x] MoveIt2 integration for collision-free motion planning
-- [ ] Separate gripper controller for grasping
+- [x] Separate gripper controller for grasping
 - [ ] Full pick-and-place logic with a box in Gazebo
 
 ## Author
