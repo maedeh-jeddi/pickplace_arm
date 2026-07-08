@@ -1,27 +1,31 @@
 # pickplace_arm
 
-A 6-DOF robot arm with a 2-finger gripper for pick-and-place simulation in ROS2 Humble and Gazebo Classic.
+A 6-DOF robot arm with a 2-finger gripper for pick-and-place simulation in ROS2 Humble and Gazebo Harmonic.
 
 ## Overview
 
-`pickplace_arm` is a ROS2 package that models a 6 degrees-of-freedom robotic arm equipped with a simple 2-finger gripper. The goal of the project is to pick up a box and place it at a target location inside a Gazebo simulation, using the `ros2_control` framework and (later) MoveIt2 for motion planning.
+`pickplace_arm` is a ROS2 package that models a 6 degrees-of-freedom robotic arm equipped with a simple 2-finger gripper. The goal of the project is to pick up a box and place it at a target location inside a Gazebo simulation, using the `ros2_control` framework and MoveIt2 for motion planning.
 
 ## Environment
 
 - ROS2 Humble
-- Gazebo Classic
-- `gazebo_ros2_control` (GazeboSystem plugin)
+- Gazebo Harmonic (`gz-sim8`)
+- `gz_ros2_control` (`GazeboSimSystem` plugin), built from source against Harmonic
+- `ros_gz` (Harmonic variant: `ros-humble-ros-gzharmonic-*`)
 
 ## Package structure
 
 ​```
 pickplace_arm_description/
 ├── urdf/
-│   └── pickplace_arm.urdf.xacro     # Arm + gripper model (8 joints)
+│   ├── pickplace_arm.urdf.xacro     # Arm + gripper model (8 joints)
+│   └── pickplace_arm.gazebo.xacro   # gz_ros2_control system + RGB-D camera (use_gazebo:=true)
+├── worlds/
+│   └── pickplace.sdf                # Harmonic world with the Sensors system
 ├── config/
 │   └── arm_controllers.yaml         # Controller configuration
 └── launch/
-    ├── gazebo.launch.py             # Spawn arm in Gazebo + start controllers
+    ├── gazebo.launch.py             # Spawn arm in Gazebo Harmonic + start controllers
     └── display.launch.py            # Visualize the model in RViz
 ​```
 
@@ -38,11 +42,13 @@ pickplace_arm_description/
 
 ## How to run
 
-Build the package and launch the simulation:
+Build the workspace (the `gz_ros2_control` plugin must be compiled against
+Harmonic via the `GZ_VERSION` environment variable), then launch:
 
 ​```bash
 cd ~/arm_ws
-colcon build --packages-select pickplace_arm_description
+export GZ_VERSION=harmonic
+colcon build
 source install/setup.bash
 ros2 launch pickplace_arm_description gazebo.launch.py
 ​```
@@ -55,7 +61,29 @@ source install/setup.bash
 ros2 control list_controllers
 ​```
 
-Expected output: both `joint_state_broadcaster` and `arm_controller` should be `active`.
+Expected output: `joint_state_broadcaster`, `arm_controller` and
+`gripper_controller` should all be `active`.
+
+### MoveIt motion planning in Gazebo
+
+To plan and execute collision-free motions from RViz that actually drive the
+arm in the Gazebo Harmonic simulation, launch the combined bringup (Gazebo +
+`move_group` + RViz):
+
+​```bash
+cd ~/arm_ws
+export GZ_VERSION=harmonic
+source install/setup.bash
+ros2 launch pickplace_arm_moveit_config gazebo_moveit.launch.py
+​```
+
+Then in RViz use the **MotionPlanning** panel: drag the goal state, *Plan*,
+then *Execute* — the arm moves in Gazebo. `demo.launch.py` still exists for
+standalone MoveIt with mock hardware (no Gazebo).
+
+> Note: RViz must be started from a normal (non-snap) terminal. If it exits
+> with `undefined symbol: __libc_pthread_init`, a snap runtime has injected
+> `/snap/...` into `LD_LIBRARY_PATH`; clear those entries and relaunch.
 
 ## Roadmap
 

@@ -1,6 +1,19 @@
 <?xml version="1.0"?>
 <robot name="pickplace_arm" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+  <!-- When true, pull in the Gazebo Harmonic ros2_control system + sensors.
+       Left false for the MoveIt/mock-hardware description so we don't end up
+       with two ros2_control systems. gazebo.launch.py sets this to true. -->
+  <xacro:arg name="use_gazebo" default="false"/>
+
+  <!-- Fix arm to world -->
+  <link name="world"/>
+  <joint name="world_joint" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
   <!-- ============ Properties ============ -->
   <xacro:property name="PI" value="3.14159265359"/>
 
@@ -217,5 +230,37 @@
 
   <xacro:finger prefix="left" reflect="1"/>
   <xacro:finger prefix="right" reflect="-1"/>
+
+  <!-- ============ RGB-D Camera (mounted on gripper_base) ============ -->
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.03 0.02"/></geometry>
+      <material name="arm_dark"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.03 0.02"/></geometry>
+    </collision>
+    <xacro:cylinder_inertial mass="0.05" radius="0.015" length="0.02"/>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="gripper_base"/>
+    <child link="camera_link"/>
+    <origin xyz="0.04 0 0.02" rpy="0 0.5 0"/>
+  </joint>
+
+  <link name="camera_optical_link"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_link"/>
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <!-- ============ Gazebo Harmonic integration (only when simulating) ============ -->
+  <xacro:if value="$(arg use_gazebo)">
+    <xacro:include filename="$(find pickplace_arm_description)/urdf/pickplace_arm.gazebo.xacro"/>
+  </xacro:if>
 
 </robot>

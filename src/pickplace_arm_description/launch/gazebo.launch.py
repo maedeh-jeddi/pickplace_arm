@@ -13,14 +13,14 @@ def generate_launch_description():
     pkg_description = get_package_share_directory('pickplace_arm_description')
 
     xacro_file = os.path.join(pkg_description, 'urdf', 'pickplace_arm.urdf.xacro')
+    world_file = os.path.join(pkg_description, 'worlds', 'pickplace.sdf')
 
     robot_description = {
         'robot_description': ParameterValue(
-            Command(['xacro ', xacro_file]), value_type=str
+            Command(['xacro ', xacro_file, ' use_gazebo:=true']), value_type=str
         )
     }
 
-    # Gazebo Harmonic
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -29,7 +29,11 @@ def generate_launch_description():
                 'gz_sim.launch.py'
             )
         ),
-        launch_arguments={'gz_args': '-r empty.sdf'}.items(),
+        # gz_version 8 = Gazebo Harmonic
+        launch_arguments={
+            'gz_args': '-r ' + world_file,
+            'gz_version': '8',
+        }.items(),
     )
 
     robot_state_publisher = Node(
@@ -40,7 +44,6 @@ def generate_launch_description():
         parameters=[robot_description, {'use_sim_time': True}],
     )
 
-    # Spawn robot in Gazebo Harmonic
     spawn_entity = Node(
         package='ros_gz_sim',
         executable='create',
@@ -94,6 +97,20 @@ def generate_launch_description():
         )
     )
 
+    bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
+            # Simulation clock -> ROS, so use_sim_time nodes get a time source
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+            '/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+        ],
+        output='screen',
+    )
+
     return LaunchDescription([
         gazebo,
         robot_state_publisher,
@@ -101,4 +118,5 @@ def generate_launch_description():
         delayed_joint_state_broadcaster,
         delayed_arm_controller,
         delayed_gripper_controller,
+        bridge,
     ])

@@ -82,4 +82,13 @@
     <disable_collisions link1="link5" link2="link6" reason="Adjacent"/>
     <disable_collisions link1="link5" link2="right_finger" reason="Never"/>
     <disable_collisions link1="link6" link2="right_finger" reason="Never"/>
+    <!-- RGB-D camera housing: rigidly mounted on the gripper, added after the
+         original collision matrix was generated. Disable self-collisions with
+         the wrist/gripper cluster it is fixed to. -->
+    <disable_collisions link1="camera_link" link2="gripper_base" reason="Adjacent"/>
+    <disable_collisions link1="camera_link" link2="left_finger" reason="Never"/>
+    <disable_collisions link1="camera_link" link2="right_finger" reason="Never"/>
+    <disable_collisions link1="camera_link" link2="link6" reason="Never"/>
+    <disable_collisions link1="camera_link" link2="link5" reason="Never"/>
+    <disable_collisions link1="camera_link" link2="link4" reason="Never"/>
 </robot>
