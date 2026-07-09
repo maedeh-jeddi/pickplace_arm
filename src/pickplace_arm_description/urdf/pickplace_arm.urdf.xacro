@@ -223,7 +223,9 @@
       <parent link="gripper_base"/>
       <child link="${prefix}_finger"/>
       <origin xyz="0 ${reflect*0.03} 0.045" rpy="0 0 0"/>
-      <axis xyz="0 1 0"/>
+      <!-- Mirror the axis per side so both fingers move outward together:
+           position 0 = closed (jaw gap 0.04 m), position 0.03 = open (gap 0.10 m) -->
+      <axis xyz="0 ${reflect} 0"/>
       <limit lower="0.0" upper="0.03" effort="20" velocity="0.1"/>
     </joint>
   </xacro:macro>

@@ -58,6 +58,25 @@
     </plugin>
   </gazebo>
 
+  <!-- High friction + soft contact on the finger pads so the gripper can
+       actually hold a box by friction in Gazebo Harmonic. -->
+  <gazebo reference="left_finger">
+    <mu1>2.0</mu1>
+    <mu2>2.0</mu2>
+    <kp>1e6</kp>
+    <kd>1.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.0</maxVel>
+  </gazebo>
+  <gazebo reference="right_finger">
+    <mu1>2.0</mu1>
+    <mu2>2.0</mu2>
+    <kp>1e6</kp>
+    <kd>1.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.0</maxVel>
+  </gazebo>
+
   <!-- RGB-D Camera sensor (Gazebo Harmonic) -->
   <gazebo reference="camera_link">
     <sensor name="rgbd_camera" type="rgbd_camera">
