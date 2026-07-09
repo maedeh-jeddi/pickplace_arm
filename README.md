@@ -42,6 +42,22 @@ pickplace_arm_description/
 
 ## How to run
 
+## Dependencies
+
+Clone the following packages into `~/arm_ws/src/` before building:
+
+```bash
+git clone https://github.com/AndrejOrsula/pymoveit2.git src/pymoveit2
+git clone https://github.com/ros-controls/gz_ros2_control.git -b humble src/gz_ros2_control
+```
+
+After cloning, apply the Gazebo Harmonic patch:
+
+```bash
+cd src/gz_ros2_control/gz_ros2_control
+git apply ../../../gz_ros2_control_harmonic.patch
+```
+
 Build the workspace (the `gz_ros2_control` plugin must be compiled against
 Harmonic via the `GZ_VERSION` environment variable), then launch:
 
