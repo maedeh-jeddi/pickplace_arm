@@ -107,8 +107,8 @@ class PickAndPlace(Node):
         self.arm = MoveIt2(
             node=self, joint_names=ARM_JOINTS, base_link_name='base_link',
             end_effector_name=GRASP_LINK, group_name='arm', callback_group=cbg)
-        self.arm.max_velocity = 0.25
-        self.arm.max_acceleration = 0.25
+        self.arm.max_velocity = 0.15
+        self.arm.max_acceleration = 0.15
 
         self.gripper_pub = self.create_publisher(
             JointTrajectory, '/gripper_controller/joint_trajectory', 10)
@@ -297,8 +297,10 @@ class PickAndPlace(Node):
         # 4) lift straight up
         self.move_pose(bx, by, APPROACH_Z, 0.0, cartesian=True, label='lift')
 
-        # 5) transport to above the place location
-        self.move_pose(px, py, APPROACH_Z, place_yaw, label='to place')
+        # 5) transport to above the place location -- cartesian (straight
+        #    line, matching the other carry segments) so the grasped box
+        #    isn't jerked loose by a fast, indirect joint-space plan.
+        self.move_pose(px, py, APPROACH_Z, place_yaw, cartesian=True, label='to place')
 
         # 6) lower and release
         self.move_pose(px, py, GRASP_Z, place_yaw, cartesian=True, label='place-down')

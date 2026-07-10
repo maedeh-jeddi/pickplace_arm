@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pick_and_place = pickplace_arm_bringup.pick_and_place:main',
+            'search_and_pick = pickplace_arm_bringup.search_and_pick:main',
         ],
     },
 )
