@@ -76,6 +76,13 @@ def generate_launch_description():
         output='screen',
     )
 
+    diff_drive_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['diff_drive_controller', '--controller-manager', '/controller_manager'],
+        output='screen',
+    )
+
     delayed_joint_state_broadcaster = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=spawn_entity,
@@ -94,6 +101,13 @@ def generate_launch_description():
         event_handler=OnProcessExit(
             target_action=arm_controller_spawner,
             on_exit=[gripper_controller_spawner],
+        )
+    )
+
+    delayed_diff_drive_controller = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=gripper_controller_spawner,
+            on_exit=[diff_drive_controller_spawner],
         )
     )
 
@@ -118,5 +132,6 @@ def generate_launch_description():
         delayed_joint_state_broadcaster,
         delayed_arm_controller,
         delayed_gripper_controller,
+        delayed_diff_drive_controller,
         bridge,
     ])

@@ -46,6 +46,26 @@
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
+    <joint name="front_left_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="front_right_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="rear_left_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="rear_right_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
   </ros2_control>
 
   <!-- Gazebo Harmonic gz_ros2_control plugin -->
@@ -76,6 +96,22 @@
     <minDepth>0.001</minDepth>
     <maxVel>0.0</maxVel>
   </gazebo>
+
+  <!-- Wheel ground contact friction, enough traction to drive/skid-steer
+       without excessive slip. -->
+  <xacro:macro name="wheel_friction" params="link">
+    <gazebo reference="${link}">
+      <mu1>1.0</mu1>
+      <mu2>1.0</mu2>
+      <kp>1e6</kp>
+      <kd>1.0</kd>
+      <minDepth>0.001</minDepth>
+    </gazebo>
+  </xacro:macro>
+  <xacro:wheel_friction link="front_left_wheel"/>
+  <xacro:wheel_friction link="front_right_wheel"/>
+  <xacro:wheel_friction link="rear_left_wheel"/>
+  <xacro:wheel_friction link="rear_right_wheel"/>
 
   <!-- RGB-D Camera sensor (Gazebo Harmonic) -->
   <gazebo reference="camera_link">

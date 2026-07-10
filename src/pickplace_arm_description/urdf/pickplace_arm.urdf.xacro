@@ -6,19 +6,25 @@
        with two ros2_control systems. gazebo.launch.py sets this to true. -->
   <xacro:arg name="use_gazebo" default="false"/>
 
-  <!-- Fix arm to world -->
-  <link name="world"/>
-  <joint name="world_joint" type="fixed">
-    <parent link="world"/>
-    <child link="base_link"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-  </joint>
+  <!-- base_link is the free-floating root: a mobile base (see wheels below)
+       carries it, rather than a fixed bolt to a "world" frame. -->
 
   <!-- ============ Properties ============ -->
   <xacro:property name="PI" value="3.14159265359"/>
 
   <xacro:property name="base_radius" value="0.08"/>
   <xacro:property name="base_height" value="0.05"/>
+
+  <!-- ============ Mobile base (4-wheel skid-steer) ============
+       base_link is spawned at world z=0.05 (see gazebo.launch.py), which is
+       unchanged by adding the base - wheel_radius is chosen to exactly
+       match that spawn height so the wheels touch the ground plane, and
+       every existing ground/grasp-height constant elsewhere in the repo
+       (pick_and_place.py, add_collision_box, etc.) stays valid untouched. -->
+  <xacro:property name="wheel_radius" value="0.05"/>
+  <xacro:property name="wheel_width" value="0.03"/>
+  <xacro:property name="wheel_x_offset" value="0.12"/>
+  <xacro:property name="wheel_y_offset" value="0.15"/>
 
   <xacro:property name="link1_len" value="0.15"/>
   <xacro:property name="link2_len" value="0.30"/>
@@ -56,6 +62,37 @@
     </collision>
     <xacro:cylinder_inertial mass="2.0" radius="${base_radius}" length="${base_height}"/>
   </link>
+
+  <!-- ============ Wheels (4-wheel skid-steer diff drive) ============
+       Cylinder axis rotated onto Y so wheels roll about the Y axis (forward
+       motion along X), matching the continuous joint axis "0 1 0" below. -->
+  <xacro:macro name="wheel" params="prefix x_reflect y_reflect">
+    <link name="${prefix}_wheel">
+      <visual>
+        <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+        <material name="arm_dark"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      </collision>
+      <xacro:cylinder_inertial mass="0.3" radius="${wheel_radius}" length="${wheel_width}"/>
+    </link>
+
+    <joint name="${prefix}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${prefix}_wheel"/>
+      <origin xyz="${x_reflect*wheel_x_offset} ${y_reflect*wheel_y_offset} 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.1" friction="0.05"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:wheel prefix="front_left"  x_reflect="1"  y_reflect="1"/>
+  <xacro:wheel prefix="front_right" x_reflect="1"  y_reflect="-1"/>
+  <xacro:wheel prefix="rear_left"   x_reflect="-1" y_reflect="1"/>
+  <xacro:wheel prefix="rear_right"  x_reflect="-1" y_reflect="-1"/>
 
   <!-- ============ Link 1 (Shoulder Yaw) ============ -->
   <link name="link1">
