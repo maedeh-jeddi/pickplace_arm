@@ -49,7 +49,12 @@ diff_drive_controller:
     wheel_separation: 0.30
     wheels_per_side: 2
     wheel_radius: 0.05
-    wheel_separation_multiplier: 1.0
+    # Skid-steer scrub correction: a 4-wheel skid-steer physically rotates
+    # less than the 2-wheel diff-drive odom model predicts (the fore/aft wheels
+    # scrub sideways). Calibrated by rotating in place and comparing odom yaw
+    # to Gazebo ground truth: odom over-reported rotation ~1.46x, so inflate
+    # the effective track by that factor to make odom yaw match reality.
+    wheel_separation_multiplier: 1.46
     left_wheel_radius_multiplier: 1.0
     right_wheel_radius_multiplier: 1.0
     publish_rate: 50.0
@@ -57,8 +62,10 @@ diff_drive_controller:
     base_frame_id: base_link
     pose_covariance_diagonal: [0.001, 0.001, 0.0, 0.0, 0.0, 0.01]
     twist_covariance_diagonal: [0.001, 0.0, 0.0, 0.0, 0.0, 0.01]
-    open_loop: true
-    enable_odom_tf: true
+    open_loop: false
+    # The robot_localization EKF publishes odom->base_link (fusing this wheel
+    # odom with the IMU), so the controller must not also publish that TF.
+    enable_odom_tf: false
     cmd_vel_timeout: 0.5
     use_stamped_vel: false
     linear:

@@ -124,8 +124,24 @@ def generate_launch_description():
             '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
         ],
         output='screen',
+    )
+
+    # robot_localization EKF: fuses wheel odometry (forward velocity) with the
+    # IMU (heading) to publish a stable odom -> base_link transform. The
+    # diff_drive controller's own odom TF is disabled (enable_odom_tf: false)
+    # so this is the single source of that transform.
+    ekf = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[
+            os.path.join(pkg_description, 'config', 'ekf.yaml'),
+            {'use_sim_time': True},
+        ],
     )
 
     return LaunchDescription([
@@ -137,4 +153,5 @@ def generate_launch_description():
         delayed_gripper_controller,
         delayed_diff_drive_controller,
         bridge,
+        ekf,
     ])

@@ -176,4 +176,15 @@
     </sensor>
   </gazebo>
 
+  <!-- IMU sensor: publishes orientation + angular velocity, fused with wheel
+       odometry by the robot_localization EKF to keep heading accurate. -->
+  <gazebo reference="imu_link">
+    <sensor name="imu" type="imu">
+      <topic>/imu</topic>
+      <update_rate>50</update_rate>
+      <always_on>1</always_on>
+      <gz_frame_id>imu_link</gz_frame_id>
+    </sensor>
+  </gazebo>
+
 </robot>

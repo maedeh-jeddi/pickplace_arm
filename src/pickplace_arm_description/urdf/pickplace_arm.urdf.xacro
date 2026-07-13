@@ -191,6 +191,23 @@
     <origin xyz="0.14 0 0.06" rpy="0 0 0"/>
   </joint>
 
+  <!-- IMU: its yaw is fused with the wheel odometry (robot_localization EKF)
+       to stabilize heading, which the 4-wheel skid-steer's wheel-only odom
+       estimates poorly (lateral scrub during turns causes heading drift that
+       corrupts SLAM). Mounted at the chassis center. -->
+  <link name="imu_link">
+    <inertial>
+      <mass value="0.02"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+  </link>
+
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+  </joint>
+
   <!-- ============ Link 1 (Shoulder Yaw) ============ -->
   <link name="link1">
     <visual>

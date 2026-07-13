@@ -50,10 +50,10 @@ NAV_TIMEOUT_SEC = 120.0
 class NavAndPick(SearchAndPick):
     def __init__(self):
         super().__init__()
-        # Route wheel commands through twist_mux (high-priority input) instead
-        # of straight to the controller, so Nav2 and this node share the base.
-        self.destroy_publisher(self.cmd_vel_pub)
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_search', 10)
+        # The inherited cmd_vel publisher already targets the diff drive
+        # controller directly. Navigation (Nav2) and this node's spin/visual
+        # servo run in separate, non-overlapping phases, so they can share that
+        # topic without a twist_mux arbitrating between them.
         self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.get_logger().info('Nav-and-pick node ready')
 

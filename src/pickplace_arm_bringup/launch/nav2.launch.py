@@ -21,7 +21,6 @@ def generate_launch_description():
     """
     bringup_share = get_package_share_directory('pickplace_arm_bringup')
     nav2_params = os.path.join(bringup_share, 'config', 'nav2_params.yaml')
-    twist_mux_params = os.path.join(bringup_share, 'config', 'twist_mux.yaml')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     sim_time = {'use_sim_time': use_sim_time}
@@ -35,8 +34,15 @@ def generate_launch_description():
     ]
 
     nav2_nodes = [
+        # controller_server publishes geometry_msgs/Twist on 'cmd_vel'; route
+        # it straight to the diff drive controller. (A twist_mux is not used:
+        # navigation and the pick node's visual servo run in separate, non-
+        # overlapping phases, so no live arbitration is needed -- and the
+        # distributed twist_mux binary is unusable on this system, its
+        # libdiagnostic_updater.so dependency being absent.)
         Node(package='nav2_controller', executable='controller_server',
-             output='screen', parameters=[nav2_params, sim_time]),
+             output='screen', parameters=[nav2_params, sim_time],
+             remappings=[('cmd_vel', '/diff_drive_controller/cmd_vel_unstamped')]),
         Node(package='nav2_smoother', executable='smoother_server',
              name='smoother_server', output='screen',
              parameters=[nav2_params, sim_time]),
@@ -55,12 +61,6 @@ def generate_launch_description():
                                     'node_names': lifecycle_nodes}]),
     ]
 
-    twist_mux = Node(
-        package='twist_mux', executable='twist_mux', name='twist_mux',
-        output='screen', parameters=[twist_mux_params, sim_time],
-        remappings=[('cmd_vel_out', '/diff_drive_controller/cmd_vel_unstamped')],
-    )
-
     return LaunchDescription(
         [DeclareLaunchArgument('use_sim_time', default_value='true')]
-        + nav2_nodes + [twist_mux])
+        + nav2_nodes)
