@@ -46,6 +46,19 @@ from pickplace_arm_bringup.search_and_pick import (
 APPROACH_DIST = 0.6
 NAV_TIMEOUT_SEC = 120.0
 
+# Coverage search: if the box isn't seen from the start, drive (via Nav2, so
+# walls/obstacles are avoided) to a ring of scan waypoints in the map frame
+# (anchored at the robot's start) and spin-scan at each. Spaced so the camera's
+# ~1.1 m detection reach sweeps the whole room; kept within +/-1.8 m so the
+# robot (radius 0.25 + 0.30 inflation) stays clear of walls at +/-3 m. This
+# replaces blind dead-reckoned creeping, which was unreliable once the
+# skid-steer's heading drifted -- now that odom/heading is IMU-corrected and
+# Nav2 localizes well, driving to explicit map waypoints is dependable.
+EXPLORE_WAYPOINTS = [
+    (1.8, 0.0), (1.3, 1.3), (0.0, 1.8), (-1.3, 1.3),
+    (-1.8, 0.0), (-1.3, -1.3), (0.0, -1.8), (1.3, -1.3),
+]
+
 
 class NavAndPick(SearchAndPick):
     def __init__(self):
@@ -57,28 +70,42 @@ class NavAndPick(SearchAndPick):
         self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.get_logger().info('Nav-and-pick node ready')
 
-    # --- initial detection: spin in place until the box is first seen -------
-    def spin_until_seen(self, timeout_sec=90.0):
+    # --- scan one full revolution in place, return the box if seen ----------
+    def scan_in_place(self):
+        log = self.get_logger()
+        for _ in range(SPIN_STEPS_PER_REV):
+            det = self.detect_box_pose(timeout_sec=1.0)
+            if det is not None:
+                bx, by, _ = det
+                log.info(f'[explore] box seen: dist={math.hypot(bx,by):.2f}m '
+                          f'bearing={math.degrees(math.atan2(by,bx)):.1f}deg')
+                return det
+            self._rotate_step(SPIN_STEP_RAD)
+        return self.detect_box_pose(timeout_sec=1.0)
+
+    # --- coverage search: scan at start, then at Nav2-reached waypoints ------
+    def explore_and_find(self):
         log = self.get_logger()
         sx, sy, sz = SEARCH_POSITION
         self.move_pose(sx, sy, sz, label='search-scan',
                        quat_xyzw=scan_quat(SEARCH_PITCH))
-        deadline = time.time() + timeout_sec
-        steps = 0
-        while time.time() < deadline:
-            det = self.detect_box_pose(timeout_sec=1.0)
+
+        det = self.scan_in_place()
+        if det is not None:
+            return det
+
+        for i, (wx, wy) in enumerate(EXPLORE_WAYPOINTS):
+            log.info(f'[explore] -> waypoint {i + 1}/{len(EXPLORE_WAYPOINTS)} '
+                      f'map({wx:.1f},{wy:.1f})')
+            goal = self.make_map_goal(wx, wy, math.atan2(wy, wx))
+            if not self.navigate_to(goal, timeout_sec=60.0):
+                log.warn(f'[explore] could not reach waypoint {i + 1} -- skipping')
+                continue
+            det = self.scan_in_place()
             if det is not None:
-                bx, by, _ = det
-                log.info(f'[nav] box first seen: dist={math.hypot(bx,by):.2f}m '
-                          f'bearing={math.degrees(math.atan2(by,bx)):.1f}deg')
                 return det
-            self._rotate_step(SPIN_STEP_RAD)
-            steps += 1
-            if steps >= SPIN_STEPS_PER_REV:
-                log.info('[nav] full rotation, nothing found -- creeping fwd')
-                self._drive_blind(0.2, 2.0)
-                time.sleep(SPIN_SETTLE_SEC)
-                steps = 0
+
+        log.error('[explore] box not found at any waypoint')
         return None
 
     # --- transform a base_link point into the map frame ---------------------
@@ -109,25 +136,24 @@ class NavAndPick(SearchAndPick):
         t = tf.transform.translation
         return t.x, t.y
 
+    def make_map_goal(self, mx, my, yaw):
+        goal = PoseStamped()
+        goal.header.frame_id = 'map'
+        goal.pose.position.x = mx
+        goal.pose.position.y = my
+        goal.pose.orientation.z = math.sin(yaw / 2.0)
+        goal.pose.orientation.w = math.cos(yaw / 2.0)
+        return goal
+
     def compute_approach_goal(self, box_map, robot_map):
         bx, by = box_map
         rx, ry = robot_map
         dx, dy = bx - rx, by - ry
         d = math.hypot(dx, dy)
-        if d < 1e-3:
-            ux, uy = 1.0, 0.0
-        else:
-            ux, uy = dx / d, dy / d
-        gx = bx - APPROACH_DIST * ux
-        gy = by - APPROACH_DIST * uy
-        yaw = math.atan2(uy, ux)  # face the box
-        goal = PoseStamped()
-        goal.header.frame_id = 'map'
-        goal.pose.position.x = gx
-        goal.pose.position.y = gy
-        goal.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.orientation.w = math.cos(yaw / 2.0)
-        return goal
+        ux, uy = (1.0, 0.0) if d < 1e-3 else (dx / d, dy / d)
+        # stop APPROACH_DIST short of the box, facing it
+        return self.make_map_goal(bx - APPROACH_DIST * ux,
+                                  by - APPROACH_DIST * uy, math.atan2(uy, ux))
 
     def navigate_to(self, goal_pose, timeout_sec=NAV_TIMEOUT_SEC):
         log = self.get_logger()
@@ -158,7 +184,7 @@ class NavAndPick(SearchAndPick):
         log = self.get_logger()
         log.info('=== NAV AND PICK: START ===')
 
-        det = self.spin_until_seen()
+        det = self.explore_and_find()
         if det is None:
             log.error('Box never detected -- aborting.')
             return

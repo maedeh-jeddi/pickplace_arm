@@ -111,7 +111,7 @@ levels of autonomy are available:
 | --- | --- |
 | `pick_and_place` | Stationary: wrist camera detects the box, arm picks & places it. No pre-set pick pose. |
 | `search_and_pick` | Mobile, vision-only: step-and-scan spin to find the box, visually servo the base to it, then pick. |
-| `nav_and_pick` | Mobile, map-based: find the box, send a **Nav2** goal (global path + costmap obstacle avoidance) to approach it, then visually servo the last stretch and pick. |
+| `nav_and_pick` | Mobile, map-based: coverage-search for the box (spin-scan, then Nav2-drive through a ring of waypoints scanning at each), then send a **Nav2** goal to approach it, visually servo the last stretch, and pick. Finds boxes well beyond camera range. |
 
 ### Extra dependencies (Nav2 + SLAM + localization)
 
@@ -146,14 +146,19 @@ ros2 launch pickplace_arm_bringup autonomous_pick.launch.py box_x:=-1.2 box_y:=0
 
 `autonomous_pick.launch.py` composes Gazebo + MoveIt + slam_toolbox + Nav2 +
 the `nav_and_pick` behavior, staged with timers. It spawns a walled room (so
-SLAM has features to map) with the box inside. The behavior detects the box,
-transforms it into the `map` frame, sends a Nav2 goal ~0.6 m in front of it
-(Nav2 plans a path and avoids obstacles via its costmaps), then hands off to
+SLAM has features to map) with the box inside. The behavior spin-scans for the
+box; if it isn't in view it drives (via Nav2, avoiding obstacles) to a ring of
+coverage waypoints, spin-scanning at each until the box is found — so boxes far
+beyond the camera's ~1.1 m reach are still located. It then transforms the box
+into the `map` frame, sends a Nav2 goal ~0.6 m in front of it, and hands off to
 the visual servo + arm pick. The arm keeps its MoveIt collision-aware planning.
 
-Verified end-to-end: `find box (0.94 m) -> box in map -> Nav2 goal -> arrival
--> visual approach -> grasp -> lift (box raised to 0.14 m) -> carry -> place`,
-ending in `PICK AND PLACE: DONE`.
+Verified end-to-end for a **near** box (found immediately): `detect -> box in
+map -> Nav2 goal -> arrival -> visual approach -> grasp -> lift (0.14 m) ->
+carry -> place -> DONE`. Also verified for a **distant** box at ~2.35 m: the
+robot spin-scans, Nav2-drives through waypoints 1->2->3, detects the box at
+waypoint 3 (0.74 m), then approaches and completes the same pick (box lifted to
+0.14 m, `PICK AND PLACE: DONE`).
 
 ### Odometry (skid-steer + IMU/EKF)
 
