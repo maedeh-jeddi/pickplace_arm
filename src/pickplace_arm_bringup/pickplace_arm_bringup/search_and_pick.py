@@ -26,26 +26,41 @@ import rclpy
 from geometry_msgs.msg import Twist
 
 from pickplace_arm_bringup.pick_and_place import (
-    PickAndPlace, scan_quat, SCAN_POSITION, SCAN_PITCH)
+    PickAndPlace, scan_quat)
 
-# --- forward-search vantage point (base_link frame) ---------------------------
-# Shallower pitch than the close-up SCAN_POSITION/SCAN_PITCH in
-# pick_and_place.py, so the camera can see further ahead while driving
-# instead of straight down at a target assumed to already be close.
-# Verified empirically to reliably detect/track a box from ~1.0m down to
-# ~0.85m, but NOT closer -- a fixed downward-tilted camera has a near-range
-# blind zone below that. Below TRANSITION_DISTANCE we switch to the already
-# -proven close-up SCAN_POSITION/SCAN_PITCH (same pose pick_and_place.py's
-# own precise scan uses, verified working down to 0.43m) for the final
-# approach, instead of trying to tune a single pitch to cover both far and
-# near range at once.
-FORWARD_SEARCH_POSITION = (0.35, 0.00, 0.45)
-FORWARD_SEARCH_PITCH = math.radians(-9.0)
-TRANSITION_DISTANCE = 0.9        # m; switch to the close-up pose below this
+# --- unified search/approach vantage point (base_link frame) ------------------
+# A single scan pose used for the entire search+approach. Its pitch is chosen
+# so its box-detection swath on the ground is CONTINUOUS from ~1.1m out down
+# to ~0.45m -- wide enough to spot the box while spinning yet reaching close
+# enough to hand off to the pick. This replaces the earlier two-pose scheme
+# (a shallow "forward-search" pose + a steep close-up pose): after the arm
+# was shortened 30% the two poses' detection ranges no longer overlapped,
+# leaving a ~[0.5,0.9]m dead zone the approach fell into and never recovered
+# from. Empirically (teleport-and-detect sweep) this pose detects the box
+# reliably across [0.45, 1.1]m; the steeper close-up SCAN_POSITION/SCAN_PITCH
+# that pick_and_place.run() uses for the final grasp scan covers [0.40,0.50]m,
+# so stopping the base with the box near ~0.45m keeps the handoff in range.
+SEARCH_POSITION = (0.30, 0.00, 0.42)
+SEARCH_PITCH = math.radians(25.0)
+# Grasp-scan pose used by run() to re-detect the box right before grasping.
+# Steeper than the search pose so its detection band ([0.40,0.70]m) reaches
+# below the search pose's ~0.45m floor and comfortably covers the ~0.43m stop
+# distance -- which is also within the shortened arm's ~0.45m grasp reach.
+GRASP_SCAN_POSITION = (0.30, 0.00, 0.42)
+GRASP_SCAN_PITCH = math.radians(38.0)
 
 # --- search state machine tuning ------------------------------------------------
-SPIN_ANGULAR = 0.3              # rad/s while searching in place
-SPIN_FULL_ROTATION_SEC = 22.0   # >= 2*pi/SPIN_ANGULAR, with margin
+# Search rotates in discrete STEPS (rotate a fixed increment, stop, let the
+# base settle, then capture a clean point cloud) rather than spinning
+# continuously. A fixed 4-wheel skid-steer scrubs and, with the arm extended
+# forward in the search pose, orbits slightly about its (forward-shifted)
+# COM while rotating; a continuous spin only leaves a narrow window where the
+# box is both in-FOV and a fresh cloud lands, which the camera can miss under
+# sim load. Stopping to scan makes each detection deterministic.
+SPIN_ANGULAR = 0.5              # rad/s during each rotation step
+SPIN_STEP_RAD = math.radians(12.0)   # heading increment per scan
+SPIN_SETTLE_SEC = 0.6          # let motion damp out before capturing
+SPIN_STEPS_PER_REV = int(round(2 * math.pi / SPIN_STEP_RAD)) + 1
 BLIND_FORWARD_LINEAR = 0.2      # m/s, when a full spin finds nothing
 BLIND_FORWARD_SEC = 2.0
 
@@ -53,9 +68,10 @@ APPROACH_LINEAR_GAIN = 0.3
 APPROACH_LINEAR_MAX = 0.25      # m/s
 APPROACH_ANGULAR_GAIN = 1.2
 APPROACH_ANGULAR_MAX = 0.6      # rad/s
-STOP_DISTANCE = 0.45            # m; within the range pick_and_place.py's own
-                                 # precise scan pose has been proven to
-                                 # handle (verified at 0.43m and 0.60m).
+STOP_DISTANCE = 0.46            # m; stop while the search pose can still see
+                                 # the box (floor ~0.45m) so it lands near
+                                 # ~0.43m -- inside both the grasp-scan pose's
+                                 # [0.40,0.70]m band and the arm's ~0.45m reach.
 
 SEARCH_TIMEOUT_SEC = 180.0
 
@@ -65,6 +81,12 @@ class SearchAndPick(PickAndPlace):
         super().__init__()
         self.cmd_vel_pub = self.create_publisher(
             Twist, '/diff_drive_controller/cmd_vel_unstamped', 10)
+        # run() re-detects for the grasp with the steeper grasp-scan pose,
+        # whose [0.40,0.70]m band covers the ~0.43m stop distance (the search
+        # pose's floor is ~0.45m, and the default steep pose only sees to
+        # 0.50m).
+        self.scan_position = GRASP_SCAN_POSITION
+        self.scan_pitch = GRASP_SCAN_PITCH
         self.get_logger().info('Search-and-pick node ready')
 
     def _stop_base(self):
@@ -79,23 +101,37 @@ class SearchAndPick(PickAndPlace):
             time.sleep(0.1)
         self._stop_base()
 
+    def _rotate_step(self, angle_rad):
+        """Rotate in place by ~angle_rad, then stop and let the base settle so
+        the next point-cloud capture is taken while stationary."""
+        twist = Twist()
+        twist.angular.z = SPIN_ANGULAR if angle_rad >= 0 else -SPIN_ANGULAR
+        end = time.time() + abs(angle_rad) / SPIN_ANGULAR
+        while time.time() < end:
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+        self._stop_base()
+        time.sleep(SPIN_SETTLE_SEC)
+
     def search_and_approach(self, timeout_sec=SEARCH_TIMEOUT_SEC):
         log = self.get_logger()
         log.info('=== SEARCH: START ===')
 
-        sx, sy, sz = FORWARD_SEARCH_POSITION
-        self.move_pose(sx, sy, sz, label='forward-search',
-                       quat_xyzw=scan_quat(FORWARD_SEARCH_PITCH))
-        close_range = False
+        sx, sy, sz = SEARCH_POSITION
+        self.move_pose(sx, sy, sz, label='search-scan',
+                       quat_xyzw=scan_quat(SEARCH_PITCH))
 
         twist = Twist()
         deadline = time.time() + timeout_sec
-        spin_deadline = time.time() + SPIN_FULL_ROTATION_SEC
+        steps_since_detection = 0
 
         while time.time() < deadline:
+            # Capture while stationary (the base is stopped after each rotate
+            # step / approach nudge, so clouds are clean).
             detection = self.detect_box_pose(timeout_sec=1.0)
 
             if detection is not None:
+                steps_since_detection = 0
                 bx, by, _bz = detection
                 dist = math.hypot(bx, by)
                 bearing = math.atan2(by, bx)
@@ -107,33 +143,34 @@ class SearchAndPick(PickAndPlace):
                     log.info('=== SEARCH: box within reach, stopping ===')
                     return True
 
-                if not close_range and dist < TRANSITION_DISTANCE:
-                    log.info('[search] within transition range -- switching '
-                              'to the proven close-up scan pose')
-                    self._stop_base()
-                    cx, cy, cz = SCAN_POSITION
-                    self.move_pose(cx, cy, cz, label='close-range',
-                                   quat_xyzw=scan_quat(SCAN_PITCH))
-                    close_range = True
-                    spin_deadline = time.time() + SPIN_FULL_ROTATION_SEC
-                    continue
-
+                # Approach: nudge toward the box, then stop so the next capture
+                # is stationary again. Cap the per-nudge distance (short pulse,
+                # gain shrinks it further as the box nears) so the base lands
+                # the box in the narrow [0.45,0.50]m window the grasp scan needs
+                # instead of overshooting past it.
+                nudge_sec = 0.3
                 twist.linear.x = min(APPROACH_LINEAR_MAX,
                                       APPROACH_LINEAR_GAIN * dist)
                 twist.angular.z = max(-APPROACH_ANGULAR_MAX, min(
                     APPROACH_ANGULAR_MAX, APPROACH_ANGULAR_GAIN * bearing))
-                self.cmd_vel_pub.publish(twist)
-                spin_deadline = time.time() + SPIN_FULL_ROTATION_SEC
+                end = time.time() + nudge_sec
+                while time.time() < end:
+                    self.cmd_vel_pub.publish(twist)
+                    time.sleep(0.05)
+                self._stop_base()
+                time.sleep(SPIN_SETTLE_SEC)
             else:
-                twist.linear.x = 0.0
-                twist.angular.z = SPIN_ANGULAR
-                self.cmd_vel_pub.publish(twist)
-                if time.time() > spin_deadline:
+                # Step-and-scan: rotate a fixed increment, stop, settle, and
+                # loop back to capture. After a full revolution with nothing
+                # seen, drive forward a short distance and try again.
+                self._rotate_step(SPIN_STEP_RAD)
+                steps_since_detection += 1
+                if steps_since_detection >= SPIN_STEPS_PER_REV:
                     log.info('[search] full rotation, nothing found -- '
                               'driving forward and retrying')
-                    self._stop_base()
                     self._drive_blind(BLIND_FORWARD_LINEAR, BLIND_FORWARD_SEC)
-                    spin_deadline = time.time() + SPIN_FULL_ROTATION_SEC
+                    time.sleep(SPIN_SETTLE_SEC)
+                    steps_since_detection = 0
 
         self._stop_base()
         log.error('=== SEARCH: timed out without finding the box ===')

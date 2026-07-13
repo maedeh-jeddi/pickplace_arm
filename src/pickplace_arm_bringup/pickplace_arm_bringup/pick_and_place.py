@@ -49,7 +49,9 @@ FINGER_LINKS = ['left_finger', 'right_finger', 'gripper_base']
 # --- task geometry (base_link frame) -----------------------------------------
 BOX_ID = 'target_box'
 BOX_SIZE = 0.045
-PLACE_XY = (0.50, 0.35)
+# Re-derived via /compute_ik sweep after the arm links were shortened 30%
+# (old reach ~0.94m -> new ~0.66m); (0.50, 0.35) is no longer reachable.
+PLACE_XY = (0.30, 0.20)
 GRASP_Z = 0.03          # gripper_base z when grasping a ground box
 APPROACH_Z = 0.15       # pre-grasp / lift height
 GRIP_OPEN = 0.03
@@ -63,7 +65,11 @@ EXPECTED_BOX_Z = -0.05 + BOX_SIZE / 2.0
 # Fixed vantage point the arm moves to before scanning for the box. Chosen so
 # the eye-in-hand camera's frustum covers the reachable table area on the
 # ground plane; verify/tune empirically (see detect_box_pose debug dump).
-SCAN_POSITION = (0.40, 0.00, 0.60)
+# Position re-derived via /compute_ik sweep after the arm links were
+# shortened 30% (old reach ~0.94m -> new ~0.66m); (0.40, 0.60) is no longer
+# reachable. Pitch is unchanged -- it's a property of the camera geometry,
+# not the arm length.
+SCAN_POSITION = (0.22, 0.00, 0.40)
 SCAN_PITCH = math.radians(55.0)
 
 # HSV bounds for the box's blue material (ambient/diffuse 0.1 0.5 0.9 ->
@@ -109,6 +115,13 @@ class PickAndPlace(Node):
             end_effector_name=GRASP_LINK, group_name='arm', callback_group=cbg)
         self.arm.max_velocity = 0.15
         self.arm.max_acceleration = 0.15
+
+        # Scan pose used by run() to locate the box before grasping. Kept as
+        # instance attributes so subclasses (e.g. the mobile search-and-pick)
+        # can substitute a pose whose detection range matches where they stop
+        # the base, without duplicating run().
+        self.scan_position = SCAN_POSITION
+        self.scan_pitch = SCAN_PITCH
 
         self.gripper_pub = self.create_publisher(
             JointTrajectory, '/gripper_controller/joint_trajectory', 10)
@@ -264,9 +277,9 @@ class PickAndPlace(Node):
         # 0) scan pose: move the wrist camera over the workspace and detect
         #    the box's position -- no pre-defined pick pose is used.
         self.gripper(GRIP_OPEN, 'open')
-        sx, sy, sz = SCAN_POSITION
+        sx, sy, sz = self.scan_position
         self.move_pose(sx, sy, sz, label='scan',
-                       quat_xyzw=scan_quat(SCAN_PITCH))
+                       quat_xyzw=scan_quat(self.scan_pitch))
         time.sleep(0.5)
         detection = self.detect_box_pose()
         if detection is None:

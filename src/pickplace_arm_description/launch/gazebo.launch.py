@@ -50,6 +50,8 @@ def generate_launch_description():
         arguments=[
             '-topic', '/robot_description',
             '-name', 'pickplace_arm',
+            # base_link (the root) sits one wheel-radius above the ground so
+            # the wheels touch the floor; base_footprint hangs below it.
             '-z', '0.05'
         ],
         output='screen',
@@ -121,6 +123,7 @@ def generate_launch_description():
             '/camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
             '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         ],
         output='screen',
     )

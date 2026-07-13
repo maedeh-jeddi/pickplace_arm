@@ -141,4 +141,39 @@
     </sensor>
   </gazebo>
 
+  <!-- 2D LIDAR sensor (Gazebo Harmonic gpu_lidar) for SLAM + Nav2 -->
+  <gazebo reference="lidar_link">
+    <sensor name="lidar" type="gpu_lidar">
+      <topic>/scan</topic>
+      <update_rate>10</update_rate>
+      <always_on>1</always_on>
+      <visualize>true</visualize>
+      <lidar>
+        <scan>
+          <!-- 270 deg forward arc (-135..+135 deg); the excluded 90 deg
+               wedge points straight back at the arm, so the scan never hits
+               it. 270 samples keeps the same ~1 deg/sample resolution as a
+               360-sample full circle. -->
+          <horizontal>
+            <samples>270</samples>
+            <resolution>1</resolution>
+            <min_angle>-2.35619449</min_angle>
+            <max_angle>2.35619449</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.12</min>
+          <max>8.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </lidar>
+      <gz_frame_id>lidar_link</gz_frame_id>
+    </sensor>
+  </gazebo>
+
 </robot>
