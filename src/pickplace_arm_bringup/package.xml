@@ -19,6 +19,11 @@
   <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>pickplace_arm_description</exec_depend>
   <exec_depend>pickplace_arm_moveit_config</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>navigation2</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>twist_mux</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

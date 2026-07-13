@@ -13,6 +13,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,6 +26,7 @@ setup(
         'console_scripts': [
             'pick_and_place = pickplace_arm_bringup.pick_and_place:main',
             'search_and_pick = pickplace_arm_bringup.search_and_pick:main',
+            'nav_and_pick = pickplace_arm_bringup.nav_and_pick:main',
         ],
     },
 )
