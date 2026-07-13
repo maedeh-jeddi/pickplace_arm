@@ -48,18 +48,39 @@ def generate_launch_description():
         arguments=['-file', box_sdf, '-name', 'target_box',
                    '-x', box_x, '-y', box_y, '-z', '0.0225'])
 
+    # A walled enclosure gives slam_toolbox continuous structure to localize
+    # against (the LIDAR needs features; open ground yields no map). Spawned
+    # around the robot so mapping works from the start.
+    wall_sdf = os.path.join(desc_share, 'models', 'wall', 'model.sdf')
+    walls = [
+        Node(package='ros_gz_sim', executable='create', output='screen',
+             arguments=['-file', wall_sdf, '-name', n,
+                        '-x', x, '-y', y, '-z', '0.3'] + yaw)
+        for (n, x, y, yaw) in [
+            ('wall_n', '0', '3.0', []),
+            ('wall_s', '0', '-3.0', []),
+            ('wall_e', '3.0', '0', ['-Y', '1.5708']),
+            ('wall_w', '-3.0', '0', ['-Y', '1.5708']),
+        ]
+    ]
+
     nav_and_pick = Node(
         package='pickplace_arm_bringup', executable='nav_and_pick',
         output='screen', parameters=[{'use_sim_time': True}])
 
     return LaunchDescription([
-        DeclareLaunchArgument('box_x', default_value='-1.2'),
-        DeclareLaunchArgument('box_y', default_value='0.8'),
+        # Box default: within the camera's ~1.1 m find-by-spin range so the
+        # robot detects it from the start, then Nav2-drives to ~0.6 m in front
+        # of it before the visual servo + arm pick take over. (Boxes beyond
+        # ~1.1 m need the blind-exploration creep, which is less reliable.)
+        DeclareLaunchArgument('box_x', default_value='0.95'),
+        DeclareLaunchArgument('box_y', default_value='0.0'),
         gazebo_moveit,
+        # Walls + box once Gazebo is up.
+        TimerAction(period=9.0, actions=walls + [spawn_box]),
         # SLAM + Nav2 once Gazebo is publishing /scan and TF.
-        TimerAction(period=10.0, actions=[slam]),
-        TimerAction(period=14.0, actions=[nav2]),
-        # Box + behavior once the full stack is up.
-        TimerAction(period=10.0, actions=[spawn_box]),
-        TimerAction(period=22.0, actions=[nav_and_pick]),
+        TimerAction(period=12.0, actions=[slam]),
+        TimerAction(period=16.0, actions=[nav2]),
+        # Behavior once the full stack is fully up (move_group ready).
+        TimerAction(period=34.0, actions=[nav_and_pick]),
     ])

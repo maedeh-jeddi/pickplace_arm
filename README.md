@@ -113,19 +113,21 @@ levels of autonomy are available:
 | `search_and_pick` | Mobile, vision-only: step-and-scan spin to find the box, visually servo the base to it, then pick. |
 | `nav_and_pick` | Mobile, map-based: find the box, send a **Nav2** goal (global path + costmap obstacle avoidance) to approach it, then visually servo the last stretch and pick. |
 
-### Extra dependencies (Nav2 + SLAM)
+### Extra dependencies (Nav2 + SLAM + localization)
 
 `nav_and_pick` / `autonomous_pick.launch.py` need Nav2, slam_toolbox and
-twist_mux. Install them (requires sudo):
+robot_localization (the EKF that fuses wheel odom + IMU). Install them
+(requires sudo):
 
 ```bash
 sudo apt update
 sudo apt install -y ros-humble-navigation2 ros-humble-nav2-bringup \
-    ros-humble-slam-toolbox ros-humble-twist-mux
+    ros-humble-slam-toolbox ros-humble-robot-localization
 ```
 
-Verify: `ros2 pkg prefix nav2_bringup slam_toolbox twist_mux` should all resolve.
-(`pick_and_place` and `search_and_pick` do **not** need these.)
+Verify: `ros2 pkg prefix nav2_bringup` (and `slam_toolbox`,
+`robot_localization`) should resolve. (`pick_and_place` and `search_and_pick`
+do **not** need these.)
 
 ### Running
 
@@ -143,8 +145,26 @@ ros2 launch pickplace_arm_bringup autonomous_pick.launch.py box_x:=-1.2 box_y:=0
 ```
 
 `autonomous_pick.launch.py` composes Gazebo + MoveIt + slam_toolbox + Nav2 +
-twist_mux + the `nav_and_pick` behavior, staged with timers. The base avoids
-obstacles via Nav2 costmaps; the arm keeps its MoveIt collision-aware planning.
+the `nav_and_pick` behavior, staged with timers. It spawns a walled room (so
+SLAM has features to map) with the box inside. The behavior detects the box,
+transforms it into the `map` frame, sends a Nav2 goal ~0.6 m in front of it
+(Nav2 plans a path and avoids obstacles via its costmaps), then hands off to
+the visual servo + arm pick. The arm keeps its MoveIt collision-aware planning.
+
+Verified end-to-end: `find box (0.94 m) -> box in map -> Nav2 goal -> arrival
+-> visual approach -> grasp -> lift (box raised to 0.14 m) -> carry -> place`,
+ending in `PICK AND PLACE: DONE`.
+
+### Odometry (skid-steer + IMU/EKF)
+
+A 4-wheel skid-steer's wheel-only odometry drifts badly in heading (lateral
+scrub during turns), which distorts the SLAM map. This is corrected by:
+`diff_drive_controller` in closed-loop with a calibrated
+`wheel_separation_multiplier`, plus a `robot_localization` EKF
+(`pickplace_arm_description/config/ekf.yaml`) fusing the wheel forward-velocity
+with an IMU heading. The EKF publishes the single `odom -> base_link`
+transform. Result: odom error over a drive loop dropped from ~1.8 m to <0.1 m,
+and SLAM localizes to ~0.6 m.
 
 > The arm was shortened (~0.45 m reach), so the base stops with the box ~0.43 m
 > ahead — inside both the camera's detection band and the arm's grasp reach.

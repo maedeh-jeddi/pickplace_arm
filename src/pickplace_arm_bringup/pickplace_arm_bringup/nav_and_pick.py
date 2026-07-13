@@ -43,7 +43,7 @@ from pickplace_arm_bringup.search_and_pick import (
 # closes the remaining distance to the exact grasp stop distance. This value
 # keeps the box comfortably inside the search pose's [0.45,1.1] m detection
 # band on arrival.
-APPROACH_DIST = 0.75
+APPROACH_DIST = 0.6
 NAV_TIMEOUT_SEC = 120.0
 
 
