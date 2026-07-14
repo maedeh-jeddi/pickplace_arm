@@ -14,6 +14,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'maps'),
+            glob('maps/*.yaml') + glob('maps/*.pgm')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -27,6 +29,7 @@ setup(
             'pick_and_place = pickplace_arm_bringup.pick_and_place:main',
             'search_and_pick = pickplace_arm_bringup.search_and_pick:main',
             'nav_and_pick = pickplace_arm_bringup.nav_and_pick:main',
+            'teleop_key = pickplace_arm_bringup.teleop_key:main',
         ],
     },
 )
