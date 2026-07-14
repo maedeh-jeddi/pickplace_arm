@@ -13,7 +13,10 @@ def generate_launch_description():
     pkg_description = get_package_share_directory('pickplace_arm_description')
 
     xacro_file = os.path.join(pkg_description, 'urdf', 'pickplace_arm.urdf.xacro')
-    world_file = os.path.join(pkg_description, 'worlds', 'pickplace.sdf')
+    # Default to the warehouse world (bigger, varied obstacles); override with
+    # the WORLD env var pointing at another .sdf under worlds/ if needed.
+    world_name = os.environ.get('WORLD', 'warehouse.sdf')
+    world_file = os.path.join(pkg_description, 'worlds', world_name)
 
     robot_description = {
         'robot_description': ParameterValue(
@@ -125,6 +128,10 @@ def generate_launch_description():
             '/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
+            # Front base-mounted RGB-D camera (box detection while driving)
+            '/front_camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/front_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/front_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
         ],
         output='screen',
     )

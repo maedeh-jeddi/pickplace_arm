@@ -187,4 +187,32 @@
     </sensor>
   </gazebo>
 
+  <!-- Front RGB-D camera: detects the box ahead while the base drives. -->
+  <gazebo reference="front_camera_link">
+    <sensor name="front_rgbd_camera" type="rgbd_camera">
+      <topic>/front_camera</topic>
+      <update_rate>15</update_rate>
+      <always_on>1</always_on>
+      <visualize>true</visualize>
+      <camera>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>8.0</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.007</stddev>
+        </noise>
+      </camera>
+      <gz_frame_id>front_camera_optical_link</gz_frame_id>
+    </sensor>
+  </gazebo>
+
 </robot>

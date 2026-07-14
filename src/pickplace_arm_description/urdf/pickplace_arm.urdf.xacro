@@ -208,6 +208,36 @@
     <origin xyz="0 0 0.02" rpy="0 0 0"/>
   </joint>
 
+  <!-- Front-facing RGB-D camera on a short mast at the front of the chassis,
+       pitched ~20 deg down so its frustum sweeps the ground ~0.3-3 m ahead.
+       Used to detect the box while the base drives (the wrist camera moves
+       with the arm and can't watch ahead during navigation). -->
+  <link name="front_camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.06 0.03"/></geometry>
+      <material name="arm_dark"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.06 0.03"/></geometry>
+    </collision>
+    <xacro:cylinder_inertial mass="0.05" radius="0.02" length="0.03"/>
+  </link>
+
+  <joint name="front_camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="front_camera_link"/>
+    <origin xyz="0.20 0 0.14" rpy="0 0.35 0"/>
+  </joint>
+
+  <link name="front_camera_optical_link"/>
+  <joint name="front_camera_optical_joint" type="fixed">
+    <parent link="front_camera_link"/>
+    <child link="front_camera_optical_link"/>
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
   <!-- ============ Link 1 (Shoulder Yaw) ============ -->
   <link name="link1">
     <visual>
