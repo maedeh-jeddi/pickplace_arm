@@ -57,6 +57,10 @@ APPROACH_Z = 0.15       # pre-grasp / lift height
 GRIP_OPEN = 0.03
 GRIP_CLOSED = 0.0
 
+# Compact "carry" pose: box held low and centered over the base so it rides
+# stably while the mobile base drives to the delivery point.
+CARRY_POSITION = (0.26, 0.00, 0.18)
+
 # Expected box centroid height in base_link frame (ground plane, see add_box):
 # used only as a sanity check against the detected z, not as the commanded z.
 EXPECTED_BOX_Z = -0.05 + BOX_SIZE / 2.0
@@ -126,11 +130,18 @@ class PickAndPlace(Node):
         self.gripper_pub = self.create_publisher(
             JointTrajectory, '/gripper_controller/joint_trajectory', 10)
 
-        # --- perception: point cloud subscription + TF ---
+        # --- perception: point cloud subscriptions + TF ---
+        # Wrist (eye-in-hand) RGB-D for the precise grasp scan, and the
+        # base-mounted front RGB-D for detecting the box while driving.
         self._cloud_lock = Lock()
         self._latest_cloud = None
         self.create_subscription(
             PointCloud2, '/camera/points', self._cloud_cb, 1,
+            callback_group=cbg)
+        self._front_lock = Lock()
+        self._front_cloud = None
+        self.create_subscription(
+            PointCloud2, '/front_camera/points', self._front_cloud_cb, 1,
             callback_group=cbg)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -140,6 +151,10 @@ class PickAndPlace(Node):
     def _cloud_cb(self, msg):
         with self._cloud_lock:
             self._latest_cloud = msg
+
+    def _front_cloud_cb(self, msg):
+        with self._front_lock:
+            self._front_cloud = msg
 
     # --- primitives ----------------------------------------------------------
     def move_pose(self, x, y, z, yaw=0.0, cartesian=False, label='',
@@ -182,12 +197,30 @@ class PickAndPlace(Node):
 
     # --- perception ------------------------------------------------------------
     def detect_box_pose(self, timeout_sec=5.0, debug_save=False):
-        """Move must already be at the scan pose. Waits for a fresh point
-        cloud, color-segments the box, and returns its centroid (x, y, z) in
-        base_link, or None if the box could not be found."""
+        """Wrist (eye-in-hand) detection: move must already be at the scan pose.
+        Returns the box centroid (x, y, z) in base_link, or None."""
+        return self._detect('wrist', timeout_sec, debug_save)
+
+    def detect_box_front(self, timeout_sec=2.0, debug_save=False):
+        """Base-mounted front camera detection (used while driving). Returns the
+        box centroid (x, y, z) in base_link, or None."""
+        return self._detect('front', timeout_sec, debug_save)
+
+    def _detect(self, source, timeout_sec, debug_save=False):
+        """Waits for a fresh point cloud from the given RGB-D source, HSV-segments
+        the blue box, and returns its centroid (x, y, z) in base_link, or None.
+        `source` is 'wrist' (/camera/points, camera_link) or 'front'
+        (/front_camera/points, front_camera_link)."""
         log = self.get_logger()
-        with self._cloud_lock:
-            self._latest_cloud = None
+        if source == 'front':
+            lock, cloud_frame = self._front_lock, 'front_camera_link'
+        else:
+            lock, cloud_frame = self._cloud_lock, 'camera_link'
+        with lock:
+            if source == 'front':
+                self._front_cloud = None
+            else:
+                self._latest_cloud = None
 
         deadline = time.time() + timeout_sec
         cloud = None
@@ -196,8 +229,8 @@ class PickAndPlace(Node):
             # idiom pymoveit2's wait_until_executed uses) instead of relying
             # solely on the background executor thread to service us.
             rclpy.spin_once(self, timeout_sec=0.2)
-            with self._cloud_lock:
-                cloud = self._latest_cloud
+            with lock:
+                cloud = self._front_cloud if source == 'front' else self._latest_cloud
             if cloud is not None:
                 break
         if cloud is None:
@@ -242,9 +275,8 @@ class PickAndPlace(Node):
         # the classical (non-optical) camera axis convention -- X-forward,
         # Y-left, Z-up -- even though the message's frame_id names the
         # *optical* frame. Verified empirically: interpreting the points as
-        # camera_link-frame (rather than camera_optical_link) is what lines
-        # up with the known box position after transforming into base_link.
-        cloud_frame = 'camera_link'
+        # the (non-optical) camera link frame is what lines up with the known
+        # box position after transforming into base_link.
         point = PointStamped()
         point.header = cloud.header
         point.header.frame_id = cloud_frame
@@ -268,11 +300,12 @@ class PickAndPlace(Node):
         return (bx, by, bz)
 
     # --- sequence ------------------------------------------------------------
-    def run(self):
+    def pick_up_box(self):
+        """Wrist-cam scan + grasp + lift the box, then hold it in the compact
+        CARRY pose. Returns True on success. Leaves the box attached to the
+        gripper so a caller can drive the base before place_box_down()."""
         log = self.get_logger()
-        log.info('=== PICK AND PLACE: START ===')
-        px, py = PLACE_XY
-        place_yaw = math.atan2(py, px)
+        log.info('=== PICK UP: START ===')
 
         # 0) scan pose: move the wrist camera over the workspace and detect
         #    the box's position -- no pre-defined pick pose is used.
@@ -283,8 +316,8 @@ class PickAndPlace(Node):
         time.sleep(0.5)
         detection = self.detect_box_pose()
         if detection is None:
-            log.error('No box detected at scan pose -- aborting pick-and-place.')
-            return
+            log.error('No box detected at scan pose -- aborting pick.')
+            return False
         bx, by, _bz = detection
         box_xy = (bx, by)
 
@@ -307,27 +340,48 @@ class PickAndPlace(Node):
             id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
         time.sleep(0.5)
 
-        # 4) lift straight up
+        # 4) lift straight up (cartesian), then tuck into the compact carry
+        #    pose. The carry hop is a larger reposition, so use a slow joint
+        #    plan (max_velocity 0.15) rather than cartesian (which can only
+        #    partially complete a long straight-line path); slow keeps the
+        #    friction-held box from being jerked loose.
         self.move_pose(bx, by, APPROACH_Z, 0.0, cartesian=True, label='lift')
+        cx, cy, cz = CARRY_POSITION
+        self.move_pose(cx, cy, cz, 0.0, cartesian=False, label='carry')
+        log.info('=== PICK UP: DONE (box held) ===')
+        return True
 
-        # 5) transport to above the place location -- cartesian (straight
-        #    line, matching the other carry segments) so the grasped box
-        #    isn't jerked loose by a fast, indirect joint-space plan.
-        self.move_pose(px, py, APPROACH_Z, place_yaw, cartesian=True, label='to place')
+    def place_box_down(self, place_xy=None):
+        """Place the currently-held box down at place_xy (base_link frame,
+        default PLACE_XY), release, and return the arm home."""
+        log = self.get_logger()
+        px, py = place_xy if place_xy is not None else PLACE_XY
+        place_yaw = math.atan2(py, px)
+        log.info('=== PLACE DOWN: START ===')
 
-        # 6) lower and release
+        # from carry: reposition over the place location (slow joint plan, as
+        # for the carry hop), then lower straight down (cartesian).
+        self.move_pose(px, py, APPROACH_Z, place_yaw, cartesian=False, label='to place')
         self.move_pose(px, py, GRASP_Z, place_yaw, cartesian=True, label='place-down')
         self.arm.detach_collision_object(BOX_ID)
         time.sleep(0.3)
         self.gripper(GRIP_OPEN, 'release')
 
-        # 7) retreat and go home
+        # retreat and go home
         self.move_pose(px, py, APPROACH_Z, place_yaw, cartesian=True, label='retreat')
         self.arm.remove_collision_object(BOX_ID)
         self.arm.move_to_configuration([0.0] * 6)
         self.arm.wait_until_executed()
+        log.info('=== PLACE DOWN: DONE ===')
 
-        log.info('=== PICK AND PLACE: DONE ===')
+    def run(self):
+        """Stationary pick-and-place: pick the box up and place it at PLACE_XY
+        relative to the current base pose (unchanged external behavior)."""
+        self.get_logger().info('=== PICK AND PLACE: START ===')
+        if not self.pick_up_box():
+            return
+        self.place_box_down()
+        self.get_logger().info('=== PICK AND PLACE: DONE ===')
 
 
 def main():
