@@ -24,12 +24,21 @@ import threading
 
 import rclpy
 from rclpy.action import ActionClient
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 import tf2_ros
 
 from nav2_msgs.action import NavigateThroughPoses
 
 from pickplace_arm_bringup.nav_and_pick import NavAndPick, APPROACH_DIST
+from pickplace_arm_bringup.pick_and_place import HOME_CONFIG, scan_quat
+from pickplace_arm_bringup.search_and_pick import (
+    STOP_DISTANCE, APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX,
+    APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH)
+
+# Hand-off distance from the front-camera coarse approach to the wrist-camera
+# fine approach: close enough that the box is inside the wrist search pose's
+# ~[0.45,1.1] m band, far enough that the front camera still sees it.
+FRONT_HANDOFF_DIST = 0.9
 
 # --- mission targets (map frame; map origin = robot's mapping start pose) -----
 # Patrol route the robot sweeps while watching for the box (open lanes in the
@@ -100,7 +109,7 @@ class Mission(NavAndPick):
         log.info('=== MISSION SEARCH: patrol + front-camera watch ===')
         # tuck the arm compactly (home) so it stays within the footprint and
         # doesn't block the forward view while driving.
-        self.arm.move_to_configuration([0.0] * 6)
+        self.arm.move_to_configuration(HOME_CONFIG)
         self.arm.wait_until_executed()
 
         if not self.tp_client.wait_for_server(timeout_sec=10.0):
@@ -148,6 +157,88 @@ class Mission(NavAndPick):
         log.error('=== MISSION SEARCH: timed out ===')
         return None
 
+    # --- APPROACH: front-cam coarse drive-in, then wrist fine servo ----------
+    def _drive_toward(self, dist, bearing, stop_slack):
+        """One short proportional nudge toward a box seen at (dist, bearing),
+        then stop + settle so the next capture is stationary. A small floor on
+        the forward speed guarantees progress across the stop threshold instead
+        of asymptotically stalling just outside it (the caller only invokes this
+        while dist >= the stop distance, so the floor can't overshoot)."""
+        twist = Twist()
+        twist.linear.x = min(APPROACH_LINEAR_MAX,
+                             max(0.06, APPROACH_LINEAR_GAIN * max(0.0, dist - stop_slack)))
+        twist.angular.z = max(-APPROACH_ANGULAR_MAX,
+                              min(APPROACH_ANGULAR_MAX, APPROACH_ANGULAR_GAIN * bearing))
+        end = time.time() + 0.3
+        while time.time() < end:
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+        self._stop_base()
+        time.sleep(0.25)
+
+    def _servo_phase(self, detect, stop_dist, stop_slack, sweep_cap, deadline):
+        """Servo the base toward the box using `detect` (front or wrist) until
+        it's within stop_dist. If the box isn't seen, do a bounded left/right
+        re-acquire sweep (never a full spin, never a blind forward drive).
+        Returns 'reached' / 'lost' / 'timeout'."""
+        log = self.get_logger()
+        sweep = 0.0
+        going_left = True
+        while time.time() < deadline:
+            det = detect(timeout_sec=1.0)
+            if det is not None:
+                sweep = 0.0
+                bx, by, _ = det
+                dist = math.hypot(bx, by)
+                bearing = math.atan2(by, bx)
+                log.info(f'[approach] box: dist={dist:.2f}m '
+                          f'bearing={math.degrees(bearing):.0f}deg')
+                if dist < stop_dist:
+                    self._stop_base()
+                    return 'reached'
+                self._drive_toward(dist, bearing, stop_slack)
+            else:
+                step = 0.15 if going_left else -0.15
+                self._rotate_step(step)
+                sweep += step
+                if going_left and sweep >= sweep_cap:
+                    going_left = False
+                elif not going_left and sweep <= -sweep_cap:
+                    self._stop_base()
+                    return 'lost'
+        return 'timeout'
+
+    def servo_to_box(self, timeout_sec=70.0):
+        """Two-phase final approach after Nav2 leaves the robot near the box:
+        1) FRONT camera (wide FOV, accurate, map-independent) drives the base to
+           ~FRONT_HANDOFF_DIST and centers the box -- robust to the map-frame
+           goal error; 2) WRIST camera fine-servo to the grasp stop distance.
+        Neither phase ever does a full 360 spin or a blind forward drive (which
+        used to make the robot wander away from the box)."""
+        log = self.get_logger()
+        log.info('=== MISSION APPROACH: front-cam coarse + wrist fine ===')
+        deadline = time.time() + timeout_sec
+
+        # Phase 1: front camera. The slack (0.3 m inside the hand-off distance)
+        # sets the drive-in speed; _servo_phase still stops at FRONT_HANDOFF_DIST.
+        r = self._servo_phase(self.detect_box_front, FRONT_HANDOFF_DIST,
+                               FRONT_HANDOFF_DIST - 0.3, sweep_cap=1.0,
+                               deadline=deadline)
+        if r != 'reached':
+            log.warn(f'[approach] front-cam phase {r} -- aborting approach')
+            return False
+
+        # Phase 2: wrist camera fine approach to the grasp stop distance.
+        self.move_pose(*SEARCH_POSITION, label='search-scan',
+                       quat_xyzw=scan_quat(SEARCH_PITCH))
+        r = self._servo_phase(self.detect_box_pose, STOP_DISTANCE,
+                              STOP_DISTANCE - 0.15, sweep_cap=0.5, deadline=deadline)
+        if r == 'reached':
+            log.info('=== MISSION APPROACH: box within reach ===')
+            return True
+        log.warn(f'[approach] wrist phase {r} -- aborting approach')
+        return False
+
     # --- full mission -------------------------------------------------------
     def run_mission(self):
         log = self.get_logger()
@@ -181,7 +272,7 @@ class Mission(NavAndPick):
         if not self.navigate_to(self.compute_approach_goal(box_map, robot_map)):
             log.error('Approach navigation failed -- aborting.')
             return
-        if not self.search_and_approach():
+        if not self.servo_to_box():
             log.error('Visual approach failed -- aborting.')
             return
 

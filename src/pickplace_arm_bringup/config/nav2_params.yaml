@@ -93,12 +93,12 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.35
+      desired_linear_vel: 0.55
       lookahead_dist: 0.5
       min_lookahead_dist: 0.3
       max_lookahead_dist: 0.8
       lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 1.0
+      rotate_to_heading_angular_vel: 1.6
       transform_tolerance: 0.2
       use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.05
@@ -111,7 +111,7 @@ controller_server:
       regulated_linear_scaling_min_speed: 0.25
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 3.0
+      max_angular_accel: 3.5
       max_robot_pose_search_dist: 10.0
 
 local_costmap:
@@ -238,10 +238,10 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.5, 0.0, 1.5]
-    min_velocity: [-0.5, 0.0, -1.5]
-    max_accel: [1.0, 0.0, 3.0]
-    max_decel: [-1.0, 0.0, -3.0]
+    max_velocity: [0.7, 0.0, 2.2]
+    min_velocity: [-0.7, 0.0, -2.2]
+    max_accel: [1.5, 0.0, 3.5]
+    max_decel: [-1.5, 0.0, -3.5]
     odom_topic: "/diff_drive_controller/odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

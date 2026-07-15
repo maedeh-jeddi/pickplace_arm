@@ -61,6 +61,13 @@ GRIP_CLOSED = 0.0
 # stably while the mobile base drives to the delivery point.
 CARRY_POSITION = (0.26, 0.00, 0.18)
 
+# Neutral / "home" arm configuration (joint angles j1..j6). Not straight up --
+# a raised, forward-curving "cobra" posture: the arm rears up from the shoulder
+# and the wrist curls the gripper forward (like a cobra's head). joints 2,3,5
+# pitch about +y (positive = lean/curl forward); their sum sets how far forward
+# the gripper points from vertical (~1.15 rad here => ~66 deg, head-up-forward).
+HOME_CONFIG = [0.0, 0.30, 0.40, 0.0, 0.45, 0.0]
+
 # Expected box centroid height in base_link frame (ground plane, see add_box):
 # used only as a sanity check against the detected z, not as the commanded z.
 EXPECTED_BOX_Z = -0.05 + BOX_SIZE / 2.0
@@ -117,8 +124,8 @@ class PickAndPlace(Node):
         self.arm = MoveIt2(
             node=self, joint_names=ARM_JOINTS, base_link_name='base_link',
             end_effector_name=GRASP_LINK, group_name='arm', callback_group=cbg)
-        self.arm.max_velocity = 0.15
-        self.arm.max_acceleration = 0.15
+        self.arm.max_velocity = 0.30
+        self.arm.max_acceleration = 0.30
 
         # Scan pose used by run() to locate the box before grasping. Kept as
         # instance attributes so subclasses (e.g. the mobile search-and-pick)
@@ -370,7 +377,7 @@ class PickAndPlace(Node):
         # retreat and go home
         self.move_pose(px, py, APPROACH_Z, place_yaw, cartesian=True, label='retreat')
         self.arm.remove_collision_object(BOX_ID)
-        self.arm.move_to_configuration([0.0] * 6)
+        self.arm.move_to_configuration(HOME_CONFIG)
         self.arm.wait_until_executed()
         log.info('=== PLACE DOWN: DONE ===')
 

@@ -208,10 +208,11 @@
     <origin xyz="0 0 0.02" rpy="0 0 0"/>
   </joint>
 
-  <!-- Front-facing RGB-D camera on a short mast at the front of the chassis,
-       pitched ~20 deg down so its frustum sweeps the ground ~0.3-3 m ahead.
-       Used to detect the box while the base drives (the wrist camera moves
-       with the arm and can't watch ahead during navigation). -->
+  <!-- Front-facing RGB-D camera mounted flush on the CHASSIS FRONT FACE
+       (the +x face is at base_length/2 = 0.19; the camera body is 0.03 deep so
+       its center sits at 0.19 + 0.015 = 0.205), near the top of the face and
+       centred in y. Pitched ~11 deg down so its frustum sweeps the ground
+       ahead for box detection while the base drives. -->
   <link name="front_camera_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -228,7 +229,7 @@
   <joint name="front_camera_joint" type="fixed">
     <parent link="base_link"/>
     <child link="front_camera_link"/>
-    <origin xyz="0.20 0 0.14" rpy="0 0.35 0"/>
+    <origin xyz="0.205 0 0.03" rpy="0 0.20 0"/>
   </joint>
 
   <link name="front_camera_optical_link"/>
