@@ -11,24 +11,35 @@
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
+    <!-- initial_value on each position state interface makes the arm SPAWN in
+         the "cobra" neutral pose (matches HOME_CONFIG in pick_and_place.py):
+         j1 0, j2 0.4, j3 0.75, j4 3.14, j5 -1.4, j6 0. -->
     <joint name="joint2">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.4</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="joint3">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.75</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="joint4">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">3.14</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="joint5">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">-1.4</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="joint6">

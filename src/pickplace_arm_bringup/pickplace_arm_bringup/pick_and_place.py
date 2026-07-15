@@ -61,12 +61,10 @@ GRIP_CLOSED = 0.0
 # stably while the mobile base drives to the delivery point.
 CARRY_POSITION = (0.26, 0.00, 0.18)
 
-# Neutral / "home" arm configuration (joint angles j1..j6). Not straight up --
-# a raised, forward-curving "cobra" posture: the arm rears up from the shoulder
-# and the wrist curls the gripper forward (like a cobra's head). joints 2,3,5
-# pitch about +y (positive = lean/curl forward); their sum sets how far forward
-# the gripper points from vertical (~1.15 rad here => ~66 deg, head-up-forward).
-HOME_CONFIG = [0.0, 0.30, 0.40, 0.0, 0.45, 0.0]
+# Neutral / "home" arm configuration (joint angles j1..j6): a raised,
+# forward-curling "cobra" posture (user-tuned). The arm also SPAWNS in this
+# pose -- see the initial_value params in pickplace_arm.gazebo.xacro.
+HOME_CONFIG = [0.0, 0.4, 0.75, 3.14, -1.4, 0.0]
 
 # Expected box centroid height in base_link frame (ground plane, see add_box):
 # used only as a sanity check against the detected z, not as the commanded z.
