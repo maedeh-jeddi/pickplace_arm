@@ -28,6 +28,7 @@ import threading
 import rclpy
 from rclpy.action import ActionClient
 from geometry_msgs.msg import Twist, PoseStamped, PointStamped
+from action_msgs.msg import GoalStatus
 import tf2_ros
 import tf2_geometry_msgs  # registers do_transform_point for PointStamped
 
@@ -155,30 +156,46 @@ class NavAndPick(SearchAndPick):
         return self.make_map_goal(bx - APPROACH_DIST * ux,
                                   by - APPROACH_DIST * uy, math.atan2(uy, ux))
 
-    def navigate_to(self, goal_pose, timeout_sec=NAV_TIMEOUT_SEC):
+    def navigate_to(self, goal_pose, timeout_sec=NAV_TIMEOUT_SEC, retries=2):
+        """Send a NavigateToPose goal and wait for it to actually SUCCEED.
+        A goal that ABORTs (e.g. the Nav2 race right after canceling a patrol,
+        or a transient plan failure) is retried after a short settle -- treating
+        such a completion as 'arrived' would hand off to the visual servo from
+        the wrong place."""
         log = self.get_logger()
         if not self.nav_client.wait_for_server(timeout_sec=10.0):
             log.error('[nav] NavigateToPose action server unavailable')
             return False
-        goal_msg = NavigateToPose.Goal()
-        goal_pose.header.stamp = self.get_clock().now().to_msg()
-        goal_msg.pose = goal_pose
-        log.info(f'[nav] sending Nav2 goal '
-                  f'({goal_pose.pose.position.x:.2f},'
-                  f'{goal_pose.pose.position.y:.2f})')
-        send_fut = self.nav_client.send_goal_async(goal_msg)
-        rclpy.spin_until_future_complete(self, send_fut, timeout_sec=10.0)
-        handle = send_fut.result()
-        if handle is None or not handle.accepted:
-            log.error('[nav] Nav2 goal rejected')
-            return False
-        result_fut = handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_fut, timeout_sec=timeout_sec)
-        if result_fut.result() is None:
-            log.error('[nav] Nav2 goal timed out')
-            return False
-        log.info('[nav] Nav2 reported arrival')
-        return True
+        for attempt in range(retries + 1):
+            goal_msg = NavigateToPose.Goal()
+            goal_pose.header.stamp = self.get_clock().now().to_msg()
+            goal_msg.pose = goal_pose
+            log.info(f'[nav] sending Nav2 goal '
+                      f'({goal_pose.pose.position.x:.2f},'
+                      f'{goal_pose.pose.position.y:.2f})'
+                      f'{" (retry)" if attempt else ""}')
+            send_fut = self.nav_client.send_goal_async(goal_msg)
+            rclpy.spin_until_future_complete(self, send_fut, timeout_sec=10.0)
+            handle = send_fut.result()
+            if handle is None or not handle.accepted:
+                log.warn('[nav] Nav2 goal rejected -- retrying')
+                time.sleep(1.5)
+                continue
+            result_fut = handle.get_result_async()
+            rclpy.spin_until_future_complete(self, result_fut, timeout_sec=timeout_sec)
+            res = result_fut.result()
+            if res is None:
+                log.error('[nav] Nav2 goal timed out')
+                return False
+            if res.status == GoalStatus.STATUS_SUCCEEDED:
+                log.info('[nav] Nav2 reached goal')
+                return True
+            log.warn(f'[nav] Nav2 goal did not succeed (status={res.status}) '
+                      f'-- settling and retrying')
+            self._stop_base()
+            time.sleep(2.0)
+        log.error('[nav] Nav2 goal failed after retries')
+        return False
 
     def run_autonomous(self):
         log = self.get_logger()

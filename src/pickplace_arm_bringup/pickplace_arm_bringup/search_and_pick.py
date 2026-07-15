@@ -68,10 +68,12 @@ APPROACH_LINEAR_GAIN = 0.3
 APPROACH_LINEAR_MAX = 0.25      # m/s
 APPROACH_ANGULAR_GAIN = 1.2
 APPROACH_ANGULAR_MAX = 0.6      # rad/s
-STOP_DISTANCE = 0.46            # m; stop while the search pose can still see
-                                 # the box (floor ~0.45m) so it lands near
-                                 # ~0.43m -- inside both the grasp-scan pose's
-                                 # [0.40,0.70]m band and the arm's ~0.45m reach.
+STOP_DISTANCE = 0.46            # m; must stay >= the search pose's ~0.45m
+                                 # detection floor (stopping closer makes the
+                                 # servo lose the box and wander). Box lands
+                                 # ~0.45m; the pre-grasp plan there is marginal
+                                 # but the cartesian descend still reaches +
+                                 # grasps it, so the pick completes.
 
 SEARCH_TIMEOUT_SEC = 180.0
 

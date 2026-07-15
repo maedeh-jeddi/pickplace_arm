@@ -29,6 +29,7 @@ setup(
             'pick_and_place = pickplace_arm_bringup.pick_and_place:main',
             'search_and_pick = pickplace_arm_bringup.search_and_pick:main',
             'nav_and_pick = pickplace_arm_bringup.nav_and_pick:main',
+            'mission = pickplace_arm_bringup.mission:main',
             'teleop_key = pickplace_arm_bringup.teleop_key:main',
         ],
     },
