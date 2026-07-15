@@ -112,6 +112,7 @@ levels of autonomy are available:
 | `pick_and_place` | Stationary: wrist camera detects the box, arm picks & places it. No pre-set pick pose. |
 | `search_and_pick` | Mobile, vision-only: step-and-scan spin to find the box, visually servo the base to it, then pick. |
 | `nav_and_pick` | Mobile, map-based: coverage-search for the box (spin-scan, then Nav2-drive through a ring of waypoints scanning at each), then send a **Nav2** goal to approach it, visually servo the last stretch, and pick. Finds boxes well beyond camera range. |
+| `mission` | Full warehouse mission on a **saved map** (AMCL localization): patrol the map **without stopping** while a **front base camera** watches; on detection, approach + arm-pick, **carry to a delivery point, place it down**, then drive to a **parking station**. |
 
 ### Extra dependencies (Nav2 + SLAM + localization)
 
@@ -159,6 +160,39 @@ carry -> place -> DONE`. Also verified for a **distant** box at ~2.35 m: the
 robot spin-scans, Nav2-drives through waypoints 1->2->3, detects the box at
 waypoint 3 (0.74 m), then approaches and completes the same pick (box lifted to
 0.14 m, `PICK AND PLACE: DONE`).
+
+### Warehouse mission: map first, then localize + deliver + park
+
+A classic map-based workflow on the bigger warehouse world:
+
+```bash
+cd ~/arm_ws && export GZ_VERSION=harmonic && source install/setup.bash
+
+# 1) Build a map: drive around with slam_toolbox, then save it.
+ros2 launch pickplace_arm_bringup mapping.launch.py
+ros2 run pickplace_arm_bringup teleop_key          # 2nd terminal: w/s/a/d/x/q
+ros2 run nav2_map_server map_saver_cli -f \
+    src/pickplace_arm_bringup/maps/warehouse        # 3rd terminal (a prebuilt map ships too)
+
+# 2) Localize (AMCL + map_server) on the saved map and send Nav2 goals in RViz:
+ros2 launch pickplace_arm_bringup localization.launch.py
+
+# 3) Run the full autonomous mission (search -> pick -> deliver -> park):
+ros2 launch pickplace_arm_bringup mission.launch.py box_x:=2.5 box_y:=-1.5
+```
+
+The `mission` behavior localizes with AMCL on `maps/warehouse.yaml`, patrols the
+map with Nav2 `NavigateThroughPoses` (driving between locations **without
+stopping**) while the front base camera watches for the box, then approaches,
+picks it up, **carries it to `DELIVERY_POSE`, sets it down**, and drives to
+`PARKING_POSE` (both are constants in `mission.py`). Verified end-to-end: box
+delivered to ~(−4, 2), robot parked at ~(4, −4), `MISSION: DONE`.
+
+> Needs `ros-humble-nav2-map-server` and `ros-humble-nav2-amcl` (part of the
+> Nav2 install above). `mission.launch.py` runs headless (no RViz) so the
+> localization lifecycle activates reliably; the full stack peaks well within a
+> typical 16 GB machine — but avoid running a second sim or a `colcon build`
+> concurrently.
 
 ### Odometry (skid-steer + IMU/EKF)
 
