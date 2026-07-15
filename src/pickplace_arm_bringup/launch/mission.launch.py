@@ -4,6 +4,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
                             TimerAction)
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -14,11 +15,11 @@ def generate_launch_description():
     """One-shot autonomous warehouse mission bringup.
 
     Gazebo (warehouse) + MoveIt move_group + AMCL localization (on the saved
-    map) + Nav2 + the target box + the mission behavior (search -> pick ->
-    deliver -> park), staged with timers. No RViz (keeps load down so the
-    localization lifecycle activates reliably; use localization.launch.py for
-    an RViz view).
+    map) + Nav2 + RViz (map, costmaps, scan, Nav2 path, both cameras, MoveIt
+    planning) + the target box + the mission behavior (search -> pick ->
+    deliver -> park), staged with timers.
 
+    RViz is on by default; disable it (e.g. to save RAM) with use_rviz:=false.
     Override the box start location, e.g.:
       ros2 launch pickplace_arm_bringup mission.launch.py box_x:=-2.0 box_y:=3.0
     """
@@ -73,11 +74,35 @@ def generate_launch_description():
         package='pickplace_arm_bringup', executable='mission',
         output='screen', parameters=[sim])
 
+    # RViz: map + costmaps + scan + Nav2 path + both cameras + MoveIt planning.
+    # The 'prefix' strips the VS Code *snap* GTK/GIO/LOCPATH env vars, which
+    # otherwise make RViz load a glibc-incompatible snap libpthread and crash
+    # (symbol lookup error __libc_pthread_init). It gets the MoveIt params so
+    # the MotionPlanning display works.
+    rviz = Node(
+        package='rviz2', executable='rviz2', name='rviz2', output='screen',
+        condition=IfCondition(LaunchConfiguration('use_rviz')),
+        prefix=('env -u GTK_PATH -u GTK_EXE_PREFIX -u LOCPATH '
+                '-u GDK_PIXBUF_MODULE_FILE -u GDK_PIXBUF_MODULEDIR '
+                '-u GIO_MODULE_DIR -u GTK_IM_MODULE_FILE'),
+        arguments=['-d', os.path.join(bringup_share, 'config', 'mission.rviz')],
+        parameters=[
+            moveit_config.robot_description,
+            moveit_config.robot_description_semantic,
+            moveit_config.robot_description_kinematics,
+            moveit_config.planning_pipelines,
+            moveit_config.joint_limits,
+            sim,
+        ])
+
     return LaunchDescription([
         DeclareLaunchArgument('box_x', default_value='2.5'),
         DeclareLaunchArgument('box_y', default_value='-1.5'),
+        DeclareLaunchArgument('use_rviz', default_value='true'),
         gazebo,
         move_group,
+        # RViz a little after Gazebo so /robot_description + move_group exist.
+        TimerAction(period=6.0, actions=[rviz]),
         TimerAction(period=9.0, actions=[spawn_box]),
         TimerAction(period=14.0, actions=[map_server, amcl,
                                           localization_lifecycle]),

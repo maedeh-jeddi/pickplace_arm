@@ -1,0 +1,114 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Value: true
+      Marker Scale: 0.6
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Description Topic:
+        Value: /robot_description
+      Value: true
+    - Class: rviz_default_plugins/Map
+      Name: Map (static)
+      Topic:
+        Value: /map
+        Durability Policy: Transient Local
+      Color Scheme: map
+      Value: true
+    - Class: rviz_default_plugins/Map
+      Name: Global Costmap
+      Topic:
+        Value: /global_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+      Alpha: 0.5
+      Value: true
+    - Class: rviz_default_plugins/Map
+      Name: Local Costmap
+      Topic:
+        Value: /local_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+      Alpha: 0.6
+      Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: LaserScan
+      Topic:
+        Value: /scan
+        Reliability Policy: Best Effort
+      Size (m): 0.04
+      Style: Points
+      Color: 255; 0; 0
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Name: Nav2 Plan
+      Topic:
+        Value: /plan
+      Color: 0; 255; 0
+      Line Width: 0.05
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: Front Camera
+      Topic:
+        Value: /front_camera/image
+        Reliability Policy: Best Effort
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: Wrist Camera
+      Topic:
+        Value: /camera/image
+        Reliability Policy: Best Effort
+      Value: true
+    - Class: moveit_rviz_plugin/MotionPlanning
+      Name: MotionPlanning
+      Planned Path:
+        Loop Animation: true
+        State Display Time: 0.05 s
+        Trajectory Topic: display_planned_path
+      Planning Scene Topic: monitored_planning_scene
+      Robot Description: robot_description
+      Scene Geometry:
+        Scene Alpha: 1
+      Scene Robot:
+        Robot Alpha: 0.5
+      Value: true
+  Global Options:
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 18.0
+      Focal Point:
+        X: 0.0
+        Y: 0.0
+        Z: 0.0
+      Name: Current View
+      Pitch: 1.2
+      Yaw: 0.785
+      Target Frame: map
+Window Geometry:
+  Height: 1000
+  Width: 1500
+  Displays:
+    collapsed: false
