@@ -39,7 +39,14 @@ def generate_launch_description():
         package="moveit_ros_move_group",
         executable="move_group",
         output="screen",
-        parameters=[moveit_config.to_dict(), use_sim_time],
+        parameters=[
+            moveit_config.to_dict(),
+            use_sim_time,
+            # Tolerate small joint-state settling drift between rapid arm moves
+            # (else MoveIt aborts with "start point deviates from current robot
+            # state"; default tolerance is a tight 0.01 rad).
+            {"trajectory_execution.allowed_start_tolerance": 0.1},
+        ],
     )
 
     # 3) RViz with the MoveIt MotionPlanning display

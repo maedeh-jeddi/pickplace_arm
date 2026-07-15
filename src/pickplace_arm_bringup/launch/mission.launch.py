@@ -42,7 +42,12 @@ def generate_launch_description():
     ).to_moveit_configs()
     move_group = Node(
         package='moveit_ros_move_group', executable='move_group',
-        output='screen', parameters=[moveit_config.to_dict(), sim])
+        output='screen', parameters=[
+            moveit_config.to_dict(), sim,
+            # Tolerate the small joint-state settling drift between rapid
+            # consecutive arm moves so MoveIt doesn't abort a plan with
+            # "start point deviates from current robot state" (default 0.01).
+            {'trajectory_execution.allowed_start_tolerance': 0.1}])
 
     map_server = Node(
         package='nav2_map_server', executable='map_server', name='map_server',

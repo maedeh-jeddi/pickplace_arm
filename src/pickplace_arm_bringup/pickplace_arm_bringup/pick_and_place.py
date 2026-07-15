@@ -162,10 +162,10 @@ class PickAndPlace(Node):
             PointCloud2, '/front_camera/points', self._front_cloud_cb, 1,
             callback_group=cbg)
 
-        # Gripper finger positions -- used to VERIFY a grasp actually holds the
-        # box (vs the jaws closing on air) so a missed grasp is retried/reported
-        # instead of the robot carrying nothing.
-        self._finger_pos = {}
+        # Latest joint positions -- used to VERIFY a grasp actually holds the
+        # box (finger positions) and to seed/normalise IK so arm moves take the
+        # nearest, simplest joint path (current arm config).
+        self._joint_pos = {}
         self.create_subscription(
             JointState, '/joint_states', self._joint_state_cb, 10,
             callback_group=cbg)
@@ -185,18 +185,18 @@ class PickAndPlace(Node):
 
     def _joint_state_cb(self, msg):
         for name, pos in zip(msg.name, msg.position):
-            if name in GRIPPER_JOINTS:
-                self._finger_pos[name] = pos
+            self._joint_pos[name] = pos
 
     def grasp_is_holding(self):
         """True if a box is currently pinched between the jaws. A finger joint
         held open by the box reads well above an empty (closed-on-air) grasp;
         use the wider-open of the two fingers so an off-centre box (which stops
         only one finger) still counts as held."""
-        if not self._finger_pos:
+        if not self._joint_pos:
             return False
-        gap = max(self._finger_pos.get(j, 0.0) for j in GRIPPER_JOINTS)
+        gap = max(self._joint_pos.get(j, 0.0) for j in GRIPPER_JOINTS)
         return gap > FINGER_HELD_MIN
+
 
     # --- primitives ----------------------------------------------------------
     def move_pose(self, x, y, z, yaw=0.0, cartesian=False, label='',
@@ -206,12 +206,55 @@ class PickAndPlace(Node):
             f'{"cartesian " if cartesian else ""}{label}')
         if quat_xyzw is None:
             quat_xyzw = zdown_quat(yaw)
-        self.arm.move_to_pose(position=(x, y, z), quat_xyzw=quat_xyzw,
-                              cartesian=cartesian,
-                              cartesian_fraction_threshold=0.0)
-        ok = self.arm.wait_until_executed()
+        if cartesian:
+            self.arm.move_to_pose(position=(x, y, z), quat_xyzw=quat_xyzw,
+                                  cartesian=True, cartesian_fraction_threshold=0.0)
+            ok = self.arm.wait_until_executed()
+        else:
+            ok = self._move_pose_direct(x, y, z, quat_xyzw, label)
         if not ok:
             self.get_logger().warn(f'[arm] motion failed: {label}')
+        time.sleep(0.5)
+        return ok
+
+    def _move_pose_direct(self, x, y, z, quat_xyzw, label):
+        """Non-cartesian pose move that takes the SIMPLE, direct path: solve IK
+        seeded from the CURRENT joint state (so the nearest configuration is
+        chosen -- no elbow/wrist flip), then plan a short joint-space move to
+        it. A bare pose goal lets MoveIt pick any IK solution, which is often a
+        far one that swings the joints all the way around. Falls back to a plain
+        pose plan if IK or the joint move fails."""
+        sol = self.arm.compute_ik(position=(x, y, z), quat_xyzw=quat_xyzw)
+        cfg = self._extract_arm_config(sol) if sol is not None else None
+        if cfg is not None:
+            self.arm.move_to_configuration(cfg)
+            if self.arm.wait_until_executed():
+                return True
+            self.get_logger().warn(
+                f'[arm] direct joint move failed for {label}; trying pose plan')
+        else:
+            self.get_logger().warn(
+                f'[arm] IK seed failed for {label}; using pose plan')
+        self.arm.move_to_pose(position=(x, y, z), quat_xyzw=quat_xyzw,
+                              cartesian=False, cartesian_fraction_threshold=0.0)
+        return self.arm.wait_until_executed()
+
+    @staticmethod
+    def _extract_arm_config(joint_state):
+        """Pull the ARM_JOINTS positions (in order) out of an IK JointState."""
+        try:
+            return [joint_state.position[joint_state.name.index(j)]
+                    for j in ARM_JOINTS]
+        except (ValueError, IndexError):
+            return None
+
+    def move_config(self, config, label=''):
+        """Move to an explicit joint configuration (a direct joint-space plan)."""
+        self.get_logger().info(f'[arm] -> configuration {label}')
+        self.arm.move_to_configuration(config)
+        ok = self.arm.wait_until_executed()
+        if not ok:
+            self.get_logger().warn(f'[arm] motion failed: config {label}')
         time.sleep(0.5)
         return ok
 
@@ -451,8 +494,7 @@ class PickAndPlace(Node):
         # retreat and go home
         self.move_pose(px, py, APPROACH_Z, place_yaw, cartesian=True, label='retreat')
         self.arm.remove_collision_object(BOX_ID)
-        self.arm.move_to_configuration(HOME_CONFIG)
-        self.arm.wait_until_executed()
+        self.move_config(HOME_CONFIG, 'home')
         log.info('=== PLACE DOWN: DONE ===')
 
     def run(self):

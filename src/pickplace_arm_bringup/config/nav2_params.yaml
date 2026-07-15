@@ -89,7 +89,11 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
       xy_goal_tolerance: 0.20
-      yaw_goal_tolerance: 0.25
+      # Loose heading tolerance: the robot doesn't need to nail an exact final
+      # yaw (the visual servo re-centres on the box, and delivery/parking don't
+      # care which way it faces). A tight yaw made the skid-steer oscillate in
+      # place around the goal heading, which tripped Nav2's recovery Spin.
+      yaw_goal_tolerance: 0.5
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"

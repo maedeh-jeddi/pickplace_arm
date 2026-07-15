@@ -32,15 +32,19 @@ from nav2_msgs.action import NavigateThroughPoses
 from pickplace_arm_bringup.nav_and_pick import NavAndPick, APPROACH_DIST
 from pickplace_arm_bringup.pick_and_place import HOME_CONFIG, scan_quat
 from pickplace_arm_bringup.search_and_pick import (
-    STOP_DISTANCE, APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX,
+    APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH,
     GRASP_SCAN_POSITION, GRASP_SCAN_PITCH)
 
-# Fine grasp-reach stop distance. The SEARCH-pose phase can only see the box
-# down to ~0.45 m, which leaves it right at the arm's z-down reach edge where
-# the pre-grasp plan fails. The steeper grasp-scan pose sees down to ~0.40 m,
-# so a final fine phase creeps the base in until the box is ~0.40 m ahead --
-# comfortably inside the reach, where the grasp is reliable.
+# Two-stage wrist approach distances. The shallow SEARCH pose reliably detects
+# the box only down to ~0.45-0.48 m, so the coarse wrist phase hands off to the
+# steeper grasp-scan pose EARLY -- at ~0.60 m, while the box is still well
+# inside the SEARCH pose's range and already inside the grasp-scan pose's
+# [0.40,0.70] band -- instead of driving to the SEARCH pose's detection floor
+# (which risks losing the box mid-approach). The grasp-scan phase then creeps
+# the base in to STOP_DISTANCE_FINE (~0.40 m), comfortably inside the arm's
+# z-down grasp reach where the pre-grasp plan succeeds.
+PHASE2_HANDOFF_DIST = 0.60
 STOP_DISTANCE_FINE = 0.41
 
 # Hand-off distance from the front-camera coarse approach to the wrist-camera
@@ -117,8 +121,7 @@ class Mission(NavAndPick):
         log.info('=== MISSION SEARCH: patrol + front-camera watch ===')
         # tuck the arm compactly (home) so it stays within the footprint and
         # doesn't block the forward view while driving.
-        self.arm.move_to_configuration(HOME_CONFIG)
-        self.arm.wait_until_executed()
+        self.move_config(HOME_CONFIG, 'home')
 
         if not self.tp_client.wait_for_server(timeout_sec=10.0):
             log.error('[mission] NavigateThroughPoses server unavailable')
@@ -237,11 +240,14 @@ class Mission(NavAndPick):
             return False
 
         # Phase 2: wrist camera (shallow SEARCH pose, sees [0.45,1.1]) drives
-        # the base in from the hand-off distance to ~STOP_DISTANCE (~0.45 m).
+        # the base in to PHASE2_HANDOFF_DIST (~0.60 m) -- an early hand-off that
+        # keeps the box well above the SEARCH pose's detection floor so it isn't
+        # lost mid-approach.
         self.move_pose(*SEARCH_POSITION, label='search-scan',
                        quat_xyzw=scan_quat(SEARCH_PITCH))
-        r = self._servo_phase(self.detect_box_pose, STOP_DISTANCE,
-                              STOP_DISTANCE - 0.15, sweep_cap=0.5, deadline=deadline)
+        r = self._servo_phase(self.detect_box_pose, PHASE2_HANDOFF_DIST,
+                              PHASE2_HANDOFF_DIST - 0.15, sweep_cap=0.5,
+                              deadline=deadline)
         if r != 'reached':
             log.warn(f'[approach] wrist phase {r} -- aborting approach')
             return False
