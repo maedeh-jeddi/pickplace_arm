@@ -30,7 +30,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration as RclDuration
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, JointState
 from sensor_msgs_py import point_cloud2
 from geometry_msgs.msg import PointStamped
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -56,6 +56,19 @@ GRASP_Z = 0.03          # gripper_base z when grasping a ground box
 APPROACH_Z = 0.15       # pre-grasp / lift height
 GRIP_OPEN = 0.03
 GRIP_CLOSED = 0.0
+
+# --- grasp verification -------------------------------------------------------
+# After the jaws close, a finger joint held OPEN by the box reads clearly above
+# an empty (fully-closed) grasp: empirically the finger position is ~0.000 when
+# the jaws close on air, but 0.004-0.005 when a box (half-width 0.0225) is
+# pinched between them (the box squeezes but the pads never reach 0). A box
+# grasped nearer the arm's reach edge reads a bit lower (~0.0024), so the
+# holding-vs-empty threshold is set with margin below the reliable held value.
+FINGER_HELD_MIN = 0.0015
+# Grasp attempts before giving up: a fresh scan + descend each time, so a box
+# nudged by a missed first attempt is re-located and re-grasped instead of the
+# robot silently carrying nothing.
+MAX_GRASP_ATTEMPTS = 3
 
 # Compact "carry" pose: box held low and centered over the base so it rides
 # stably while the mobile base drives to the delivery point.
@@ -148,6 +161,15 @@ class PickAndPlace(Node):
         self.create_subscription(
             PointCloud2, '/front_camera/points', self._front_cloud_cb, 1,
             callback_group=cbg)
+
+        # Gripper finger positions -- used to VERIFY a grasp actually holds the
+        # box (vs the jaws closing on air) so a missed grasp is retried/reported
+        # instead of the robot carrying nothing.
+        self._finger_pos = {}
+        self.create_subscription(
+            JointState, '/joint_states', self._joint_state_cb, 10,
+            callback_group=cbg)
+
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
@@ -160,6 +182,21 @@ class PickAndPlace(Node):
     def _front_cloud_cb(self, msg):
         with self._front_lock:
             self._front_cloud = msg
+
+    def _joint_state_cb(self, msg):
+        for name, pos in zip(msg.name, msg.position):
+            if name in GRIPPER_JOINTS:
+                self._finger_pos[name] = pos
+
+    def grasp_is_holding(self):
+        """True if a box is currently pinched between the jaws. A finger joint
+        held open by the box reads well above an empty (closed-on-air) grasp;
+        use the wider-open of the two fingers so an off-centre box (which stops
+        only one finger) still counts as held."""
+        if not self._finger_pos:
+            return False
+        gap = max(self._finger_pos.get(j, 0.0) for j in GRIPPER_JOINTS)
+        return gap > FINGER_HELD_MIN
 
     # --- primitives ----------------------------------------------------------
     def move_pose(self, x, y, z, yaw=0.0, cartesian=False, label='',
@@ -305,56 +342,95 @@ class PickAndPlace(Node):
         return (bx, by, bz)
 
     # --- sequence ------------------------------------------------------------
-    def pick_up_box(self):
-        """Wrist-cam scan + grasp + lift the box, then hold it in the compact
-        CARRY pose. Returns True on success. Leaves the box attached to the
-        gripper so a caller can drive the base before place_box_down()."""
+    def _attempt_grasp(self, bx, by):
+        """One pre-grasp -> descend -> close on the box at (bx, by). Returns True
+        only if a box is actually pinched between the jaws afterwards (verified
+        via the finger positions), so a miss is caught instead of assumed."""
         log = self.get_logger()
-        log.info('=== PICK UP: START ===')
 
-        # 0) scan pose: move the wrist camera over the workspace and detect
-        #    the box's position -- no pre-defined pick pose is used.
-        self.gripper(GRIP_OPEN, 'open')
-        sx, sy, sz = self.scan_position
-        self.move_pose(sx, sy, sz, label='scan',
-                       quat_xyzw=scan_quat(self.scan_pitch))
-        time.sleep(0.5)
-        detection = self.detect_box_pose()
-        if detection is None:
-            log.error('No box detected at scan pose -- aborting pick.')
+        # pre-grasp above the box. If planning here fails the box is beyond a
+        # comfortable z-down reach; report it so the caller retries/repositions
+        # rather than blindly descending from the scan pose and missing.
+        if not self.move_pose(bx, by, APPROACH_Z, 0.0, label='pre-grasp'):
+            log.warn('[grasp] pre-grasp unreachable -- box too far for a clean grasp')
             return False
-        bx, by, _bz = detection
-        box_xy = (bx, by)
 
-        # box known to MoveIt for pre-grasp/transport awareness + RViz display
-        self.add_box(box_xy)
-
-        # 1) pre-grasp above the box
-        self.move_pose(bx, by, APPROACH_Z, 0.0, label='pre-grasp')
-
-        # 2) descend onto the box (remove it from the scene so the jaws may
-        #    surround it without a false collision), then grasp
+        # descend onto the box (remove it from the scene so the jaws may
+        # surround it without a false collision), then close.
         self.arm.remove_collision_object(BOX_ID)
         time.sleep(0.3)
         self.move_pose(bx, by, GRASP_Z, 0.0, cartesian=True, label='descend')
         self.gripper(GRIP_CLOSED, 'grasp')
 
-        # 3) attach the box so MoveIt carries it (and RViz shows it grasped)
-        self.add_box(box_xy, z_center=-0.05 + BOX_SIZE / 2.0)
-        self.arm.attach_collision_object(
-            id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
-        time.sleep(0.5)
-
-        # 4) lift straight up (cartesian), then tuck into the compact carry
-        #    pose. The carry hop is a larger reposition, so use a slow joint
-        #    plan (max_velocity 0.15) rather than cartesian (which can only
-        #    partially complete a long straight-line path); slow keeps the
-        #    friction-held box from being jerked loose.
-        self.move_pose(bx, by, APPROACH_Z, 0.0, cartesian=True, label='lift')
-        cx, cy, cz = CARRY_POSITION
-        self.move_pose(cx, cy, cz, 0.0, cartesian=False, label='carry')
-        log.info('=== PICK UP: DONE (box held) ===')
+        if not self.grasp_is_holding():
+            log.warn('[grasp] jaws closed on air (no box between fingers)')
+            return False
+        log.info('[grasp] box held between the jaws')
         return True
+
+    def pick_up_box(self):
+        """Wrist-cam scan + grasp + lift the box, then hold it in the compact
+        CARRY pose. Returns True only after VERIFYING the box is actually held
+        (retries the scan+grasp up to MAX_GRASP_ATTEMPTS times, and returns
+        False if it never catches the box, so the caller never proceeds as if
+        it picked when it didn't). On success the box stays attached to the
+        gripper so a caller can drive the base before place_box_down()."""
+        log = self.get_logger()
+        log.info('=== PICK UP: START ===')
+        sx, sy, sz = self.scan_position
+
+        for attempt in range(1, MAX_GRASP_ATTEMPTS + 1):
+            log.info(f'--- grasp attempt {attempt}/{MAX_GRASP_ATTEMPTS} ---')
+
+            # 0) open, move the wrist camera over the workspace, and detect the
+            #    box afresh (so a box nudged by a previous miss is re-located).
+            self.gripper(GRIP_OPEN, 'open')
+            self.move_pose(sx, sy, sz, label='scan',
+                           quat_xyzw=scan_quat(self.scan_pitch))
+            time.sleep(0.5)
+            detection = self.detect_box_pose()
+            if detection is None:
+                log.warn(f'[pick] no box detected at scan pose (attempt {attempt})')
+                continue
+            bx, by, _bz = detection
+            box_xy = (bx, by)
+
+            # box known to MoveIt for pre-grasp/transport awareness + RViz
+            self.add_box(box_xy)
+
+            # 1+2) pre-grasp -> descend -> close, and verify the jaws hold it
+            if not self._attempt_grasp(bx, by):
+                self.arm.remove_collision_object(BOX_ID)
+                continue
+
+            # 3) attach the box so MoveIt carries it (and RViz shows it grasped)
+            self.add_box(box_xy, z_center=-0.05 + BOX_SIZE / 2.0)
+            self.arm.attach_collision_object(
+                id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
+            time.sleep(0.5)
+
+            # 4) lift straight up (cartesian), then tuck into the compact carry
+            #    pose. The carry hop is a larger reposition, so use a slow joint
+            #    plan rather than cartesian; slow keeps the friction-held box
+            #    from being jerked loose.
+            self.move_pose(bx, by, APPROACH_Z, 0.0, cartesian=True, label='lift')
+            cx, cy, cz = CARRY_POSITION
+            self.move_pose(cx, cy, cz, 0.0, cartesian=False, label='carry')
+
+            # 5) confirm the box survived the lift + carry (didn't slip out).
+            if not self.grasp_is_holding():
+                log.warn('[pick] box slipped during lift/carry -- retrying')
+                self.arm.detach_collision_object(BOX_ID)
+                self.arm.remove_collision_object(BOX_ID)
+                continue
+
+            log.info('=== PICK UP: DONE (box held) ===')
+            return True
+
+        log.error(f'=== PICK UP: FAILED after {MAX_GRASP_ATTEMPTS} attempts '
+                  f'(no box grasped) ===')
+        self.arm.remove_collision_object(BOX_ID)
+        return False
 
     def place_box_down(self, place_xy=None):
         """Place the currently-held box down at place_xy (base_link frame,

@@ -33,7 +33,15 @@ from pickplace_arm_bringup.nav_and_pick import NavAndPick, APPROACH_DIST
 from pickplace_arm_bringup.pick_and_place import HOME_CONFIG, scan_quat
 from pickplace_arm_bringup.search_and_pick import (
     STOP_DISTANCE, APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX,
-    APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH)
+    APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH,
+    GRASP_SCAN_POSITION, GRASP_SCAN_PITCH)
+
+# Fine grasp-reach stop distance. The SEARCH-pose phase can only see the box
+# down to ~0.45 m, which leaves it right at the arm's z-down reach edge where
+# the pre-grasp plan fails. The steeper grasp-scan pose sees down to ~0.40 m,
+# so a final fine phase creeps the base in until the box is ~0.40 m ahead --
+# comfortably inside the reach, where the grasp is reliable.
+STOP_DISTANCE_FINE = 0.41
 
 # Hand-off distance from the front-camera coarse approach to the wrist-camera
 # fine approach: close enough that the box is inside the wrist search pose's
@@ -228,15 +236,28 @@ class Mission(NavAndPick):
             log.warn(f'[approach] front-cam phase {r} -- aborting approach')
             return False
 
-        # Phase 2: wrist camera fine approach to the grasp stop distance.
+        # Phase 2: wrist camera (shallow SEARCH pose, sees [0.45,1.1]) drives
+        # the base in from the hand-off distance to ~STOP_DISTANCE (~0.45 m).
         self.move_pose(*SEARCH_POSITION, label='search-scan',
                        quat_xyzw=scan_quat(SEARCH_PITCH))
         r = self._servo_phase(self.detect_box_pose, STOP_DISTANCE,
                               STOP_DISTANCE - 0.15, sweep_cap=0.5, deadline=deadline)
+        if r != 'reached':
+            log.warn(f'[approach] wrist phase {r} -- aborting approach')
+            return False
+
+        # Phase 3: steeper grasp-scan pose (sees [0.40,0.70]) creeps the last
+        # few cm so the box ends ~0.40 m ahead -- inside the arm's grasp reach,
+        # instead of stranded at the ~0.45 m reach edge where the pick misses.
+        self.move_pose(*GRASP_SCAN_POSITION, label='grasp-scan',
+                       quat_xyzw=scan_quat(GRASP_SCAN_PITCH))
+        r = self._servo_phase(self.detect_box_pose, STOP_DISTANCE_FINE,
+                              STOP_DISTANCE_FINE - 0.10, sweep_cap=0.4,
+                              deadline=deadline)
         if r == 'reached':
-            log.info('=== MISSION APPROACH: box within reach ===')
+            log.info('=== MISSION APPROACH: box within grasp reach ===')
             return True
-        log.warn(f'[approach] wrist phase {r} -- aborting approach')
+        log.warn(f'[approach] fine phase {r} -- aborting approach')
         return False
 
     # --- full mission -------------------------------------------------------
