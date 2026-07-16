@@ -42,6 +42,15 @@ import tf2_geometry_msgs  # noqa: F401  (registers PointStamped transform suppor
 from pymoveit2 import MoveIt2
 
 ARM_JOINTS = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+# Indices of the pure ROLL joints (rotate about their own axis, limits +/-pi):
+# j1 (base yaw), j4 (forearm roll), j6 (wrist roll). For these, an angle and
+# angle +/- 2*pi are the SAME orientation, so a goal near one +/-pi limit can be
+# reached from near the other by commanding the equivalent value -- avoiding a
+# useless ~2*pi unwind. (j2/j3/j5 are pitch joints with real sub-2*pi ranges.)
+ROLL_JOINT_IDX = (0, 3, 5)
+# Roll joints are limited to +/-2*pi in the URDF (a small margin below keeps the
+# normalized equivalent safely inside the limit).
+ROLL_LIMIT = 2.0 * math.pi - 0.02
 GRIPPER_JOINTS = ['left_finger_joint', 'right_finger_joint']
 GRASP_LINK = 'gripper_base'
 FINGER_LINKS = ['left_finger', 'right_finger', 'gripper_base']
@@ -241,6 +250,7 @@ class PickAndPlace(Node):
         sol = self.arm.compute_ik(position=(x, y, z), quat_xyzw=quat_xyzw)
         cfg = self._extract_arm_config(sol) if sol is not None else None
         if cfg is not None:
+            cfg = self._normalize_roll_config(cfg)
             self.arm.move_to_configuration(cfg)
             if self.arm.wait_until_executed():
                 return True
@@ -262,8 +272,33 @@ class PickAndPlace(Node):
         except (ValueError, IndexError):
             return None
 
+    def _current_arm_config(self):
+        if not all(j in self._joint_pos for j in ARM_JOINTS):
+            return None
+        return [self._joint_pos[j] for j in ARM_JOINTS]
+
+    def _normalize_roll_config(self, config):
+        """For each ROLL joint, replace the target angle with the equivalent
+        (+/- 2*pi) that is CLOSEST to the current angle while staying inside the
+        joint's +/-2*pi limit. This removes the useless ~2*pi unwind when the
+        goal is near one pi and the arm is near the other (same orientation)."""
+        cur = self._current_arm_config()
+        if cur is None:
+            return config
+        config = list(config)
+        for i in ROLL_JOINT_IDX:
+            best = config[i]
+            for alt in (config[i] - 2.0 * math.pi, config[i] + 2.0 * math.pi):
+                if -ROLL_LIMIT <= alt <= ROLL_LIMIT and abs(alt - cur[i]) < abs(best - cur[i]):
+                    best = alt
+            config[i] = best
+        return config
+
     def move_config(self, config, label=''):
-        """Move to an explicit joint configuration (a direct joint-space plan)."""
+        """Move to an explicit joint configuration (a direct joint-space plan).
+        Roll-joint targets are normalized to the nearest equivalent so the arm
+        never unwinds ~2*pi to reach the same orientation."""
+        config = self._normalize_roll_config(config)
         self.get_logger().info(f'[arm] -> configuration {label}')
         self.arm.move_to_configuration(config)
         ok = self.arm.wait_until_executed()

@@ -259,12 +259,16 @@
     <xacro:cylinder_inertial mass="1.0" radius="${link_radius}" length="${link1_len}"/>
   </link>
 
+  <!-- Roll joint with +/-2pi range (not +/-pi): a target near one pi limit can
+       then be reached from near the other via its +/-2pi equivalent (same
+       orientation) instead of unwinding ~2pi. Still bounded revolute, so no
+       continuous-joint state aliasing. -->
   <joint name="joint1" type="revolute">
     <parent link="base_link"/>
     <child link="link1"/>
     <origin xyz="0 0 ${base_height/2}" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
-    <limit lower="-${PI}" upper="${PI}" effort="50" velocity="1.5"/>
+    <limit lower="-${2*PI}" upper="${2*PI}" effort="50" velocity="1.5"/>
   </joint>
 
   <!-- ============ Link 2 (Upper Arm Pitch) ============ -->
@@ -344,13 +348,15 @@
     <xacro:cylinder_inertial mass="0.4" radius="${link4_radius}" length="${link4_len}"/>
   </link>
 
+  <!-- Forearm roll with +/-2pi range so the gripper-down grasp (j4 ~= +/-pi) is
+       reachable from either side without a ~2pi unwind. -->
   <joint name="joint4" type="revolute">
     <parent link="link3"/>
     <child link="link4"/>
     <!-- wrist offset: wrist cluster steps forward of the forearm -->
     <origin xyz="${wrist_offset} 0 ${link3_len}" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
-    <limit lower="-${PI}" upper="${PI}" effort="20" velocity="2.0"/>
+    <limit lower="-${2*PI}" upper="${2*PI}" effort="20" velocity="2.0"/>
   </joint>
 
   <!-- ============ Link 5 (Wrist Pitch) ============ -->
@@ -401,12 +407,13 @@
     <xacro:cylinder_inertial mass="0.2" radius="${link6_radius}" length="${link6_len}"/>
   </link>
 
+  <!-- Wrist roll with +/-2pi range, same reason as j4. -->
   <joint name="joint6" type="revolute">
     <parent link="link5"/>
     <child link="link6"/>
     <origin xyz="0 0 ${link5_len}" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
-    <limit lower="-${PI}" upper="${PI}" effort="10" velocity="2.0"/>
+    <limit lower="-${2*PI}" upper="${2*PI}" effort="10" velocity="2.0"/>
   </joint>
 
   <!-- ============ Gripper (simple 2-finger, mounted on link6) ============ -->
