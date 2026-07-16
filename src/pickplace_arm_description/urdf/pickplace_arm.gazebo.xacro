@@ -11,36 +11,35 @@
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <!-- initial_value on each position state interface makes the arm SPAWN in
-         the "cobra" neutral pose (matches HOME_CONFIG in pick_and_place.py):
-         j1 0, j2 0.4, j3 0.75, j4 0, j5 -1.4, j6 0. The wrist roll j4 is 0
-         (not pi) so it already matches the grasp orientation, so the gripper
-         never has to spin 180 deg to pick, and the arm shape is unchanged. -->
+    <!-- initial_value makes the arm SPAWN in the gripper-DOWN "claw ready" pose
+         (matches HOME_CONFIG in pick_and_place.py): j1 0, j2 0.52, j3 1.14,
+         j4 -3.14, j5 -1.48, j6 0. The gripper points straight down, reaching
+         ~0.38 m ahead, so it can descend straight onto a box driven under it. -->
     <joint name="joint2">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">0.4</param>
+        <param name="initial_value">0.52</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="joint3">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">0.75</param>
+        <param name="initial_value">1.14</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="joint4">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">0.0</param>
+        <param name="initial_value">-3.14</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="joint5">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">-1.4</param>
+        <param name="initial_value">-1.48</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>

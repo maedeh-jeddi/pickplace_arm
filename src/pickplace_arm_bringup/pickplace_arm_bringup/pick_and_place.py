@@ -74,14 +74,24 @@ MAX_GRASP_ATTEMPTS = 3
 # stably while the mobile base drives to the delivery point.
 CARRY_POSITION = (0.26, 0.00, 0.18)
 
-# Neutral / "home" arm configuration (joint angles j1..j6): a raised,
-# forward-curling "cobra" posture (user-tuned). The arm also SPAWNS in this
-# pose -- see the initial_value params in pickplace_arm.gazebo.xacro. The wrist
-# roll j4 is 0 (not pi) so it already matches the downward-grasp orientation:
-# moving from home to the grasp no longer rolls the gripper ~180 deg (which
-# looked like the gripper "spinning" on arrival). The arm shape is unchanged --
-# j4 only rolls the gripper about the forearm axis.
-HOME_CONFIG = [0.0, 0.4, 0.75, 0.0, -1.4, 0.0]
+# Neutral / "ready" arm configuration (joint angles j1..j6): the gripper points
+# STRAIGHT DOWN, reaching ~0.38 m ahead at ~0.22 m height -- a "claw" ready pose.
+# The arm spawns in this pose (see initial_value in pickplace_arm.gazebo.xacro)
+# and holds it through search + approach, so the mobile base only has to drive
+# the box directly under the gripper (front camera guides that), then the gripper
+# descends straight down onto it -- no wrist reorientation, no gripper spin.
+# (This IS the reachable straight-down IK for gripper_base at (0.38,0,0.22).)
+HOME_CONFIG = [0.0, 0.52, 1.14, -3.14, -1.48, 0.0]
+
+# Claw geometry: where the gripper sits (base_link) in the ready pose, and the
+# grasp/lift heights. The base positions the box under GRIPPER_X/Y, then the
+# gripper descends straight down.
+GRIPPER_X = 0.38
+GRIPPER_Y = 0.0
+READY_Z = 0.22
+# The front camera reads the box's forward distance ~2 cm short of ground truth
+# (measured); add this back when descending onto it.
+FRONT_X_OFFSET = 0.02
 
 # Expected box centroid height in base_link frame (ground plane, see add_box):
 # used only as a sanity check against the detected z, not as the commanded z.
@@ -478,6 +488,51 @@ class PickAndPlace(Node):
                   f'(no box grasped) ===')
         self.arm.remove_collision_object(BOX_ID)
         return False
+
+    def grab_below(self):
+        """Claw grab: the box has been driven directly UNDER the gripper-down
+        ready pose. Take a fresh front-camera read of it, descend straight onto
+        that spot, close, verify, then lift and tuck into the carry pose. No
+        scan/reorientation -- the gripper stays pointing down the whole time.
+        Returns True only if the box is actually held (verified via the fingers);
+        a miss is retried by the caller re-centring and calling again."""
+        log = self.get_logger()
+        log.info('=== CLAW GRAB: descend straight down ===')
+        self.gripper(GRIP_OPEN, 'open')
+        # fresh read of the box now under the gripper (front cam reads ~2 cm
+        # short -- correct it), then descend onto it.
+        det = self.detect_box_front(timeout_sec=1.5)
+        if det is None:
+            log.warn('[claw] box not seen for grab')
+            return False
+        bx = min(GRIPPER_X + 0.03, det[0] + FRONT_X_OFFSET)
+        by = det[1]
+        self.move_pose(bx, by, GRASP_Z, 0.0, cartesian=True,
+                       label='claw descend', quat_xyzw=zdown_quat(0.0))
+        self.gripper(GRIP_CLOSED, 'grasp')
+        if not self.grasp_is_holding():
+            log.warn('[claw] jaws closed on air -- lifting to retry')
+            self.move_pose(bx, by, READY_Z, 0.0, cartesian=True,
+                           label='claw lift-empty', quat_xyzw=zdown_quat(0.0))
+            return False
+        log.info('[claw] box held between the jaws')
+
+        # attach so MoveIt carries it + RViz shows it, lift straight up, carry
+        self.add_box((bx, by), z_center=-0.05 + BOX_SIZE / 2.0)
+        self.arm.attach_collision_object(
+            id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
+        time.sleep(0.5)
+        self.move_pose(bx, by, READY_Z, 0.0, cartesian=True,
+                       label='claw lift', quat_xyzw=zdown_quat(0.0))
+        cx, cy, cz = CARRY_POSITION
+        self.move_pose(cx, cy, cz, 0.0, cartesian=False, label='carry')
+        if not self.grasp_is_holding():
+            log.warn('[claw] box slipped during lift/carry')
+            self.arm.detach_collision_object(BOX_ID)
+            self.arm.remove_collision_object(BOX_ID)
+            return False
+        log.info('=== CLAW GRAB: DONE (box held) ===')
+        return True
 
     def place_box_down(self, place_xy=None):
         """Place the currently-held box down at place_xy (base_link frame,

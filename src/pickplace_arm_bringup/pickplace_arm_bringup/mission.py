@@ -30,7 +30,8 @@ import tf2_ros
 from nav2_msgs.action import NavigateThroughPoses
 
 from pickplace_arm_bringup.nav_and_pick import NavAndPick, APPROACH_DIST
-from pickplace_arm_bringup.pick_and_place import HOME_CONFIG, scan_quat
+from pickplace_arm_bringup.pick_and_place import (
+    HOME_CONFIG, scan_quat, GRIPPER_X, GRIPPER_Y)
 from pickplace_arm_bringup.search_and_pick import (
     APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH,
@@ -46,6 +47,13 @@ from pickplace_arm_bringup.search_and_pick import (
 # z-down grasp reach where the pre-grasp plan succeeds.
 PHASE2_HANDOFF_DIST = 0.60
 STOP_DISTANCE_FINE = 0.41
+
+# Claw approach: stop driving when the FRONT camera reads the box this far ahead
+# -- the front cam reads ~0.02 m short, so at 0.36 the box is actually ~0.38 m
+# ahead, directly under the gripper-down ready pose. Centre laterally to within
+# CLAW_Y_TOL (the jaws close in y, so lateral accuracy matters most).
+CLAW_STOP_X = GRIPPER_X - 0.02
+CLAW_Y_TOL = 0.02
 
 # Hand-off distance from the front-camera coarse approach to the wrist-camera
 # fine approach. 0.9 m: the wide-FOV front camera keeps the (now centred) box in
@@ -308,6 +316,70 @@ class Mission(NavAndPick):
         return False
 
     # --- full mission -------------------------------------------------------
+    # --- CLAW approach: keep the gripper down, drive the box under it ---------
+    def claw_approach(self, box_map, timeout_sec=60.0):
+        """One continuous motion: keep the gripper pointing straight DOWN and use
+        the front (chassis) camera to drive the base until the box sits directly
+        under the gripper -- no stop-and-go, no arm reorientation. The front
+        camera sees the box accurately from ~1.8 m right down to ~0.3 m, so it
+        alone guides the whole approach; the wrist camera isn't used (it points
+        down with the gripper). Stops when the box's forward reading reaches
+        CLAW_STOP_X (box then actually under the gripper) and is centred."""
+        log = self.get_logger()
+        log.info('=== MISSION APPROACH: claw (gripper-down, continuous) ===')
+        self.move_config(HOME_CONFIG, 'gripper-down ready')
+        if box_map is not None:
+            self._face_box(box_map)
+        deadline = time.time() + timeout_sec
+        twist = Twist()
+        lost = 0
+        while time.time() < deadline:
+            det = self.detect_box_front(timeout_sec=0.25)
+            if det is not None:
+                lost = 0
+                bx, by, _ = det
+                if bx <= CLAW_STOP_X and abs(by) <= CLAW_Y_TOL:
+                    self._stop_base()
+                    log.info(f'[claw] box under gripper (front {bx:.2f},{by:+.2f})')
+                    return True
+                fwd = max(0.0, bx - CLAW_STOP_X)
+                twist.linear.x = min(APPROACH_LINEAR_MAX,
+                                     max(APPROACH_LINEAR_MIN, APPROACH_LINEAR_GAIN * fwd))
+                twist.angular.z = max(-APPROACH_ANGULAR_MAX,
+                                      min(APPROACH_ANGULAR_MAX,
+                                          APPROACH_ANGULAR_GAIN * math.atan2(by, bx)))
+            else:
+                lost += 1
+                if lost > 12:
+                    self._stop_base()
+                    log.warn('[claw] lost the box -- aborting approach')
+                    return False
+                twist.linear.x *= 0.4    # ease off, don't hard-stop
+                twist.angular.z = 0.0
+            # publish continuously (~30 Hz for ~0.12 s) so the base keeps moving
+            # smoothly between detections instead of stopping.
+            for _ in range(4):
+                self.cmd_vel_pub.publish(twist)
+                time.sleep(0.03)
+        self._stop_base()
+        log.warn('[claw] approach timed out')
+        return False
+
+    def claw_pick(self, box_map):
+        """Continuous claw pick: drive the box under the gripper then descend
+        straight onto it. Retries the drive-in + grab a few times (re-centring
+        each time) and returns False only if it never holds the box."""
+        log = self.get_logger()
+        for attempt in range(1, 4):
+            log.info(f'--- claw pick attempt {attempt}/3 ---')
+            if not self.claw_approach(box_map):
+                return False
+            if self.grab_below():
+                return True
+            log.warn('[claw] grab missed -- re-centring and retrying')
+            self.move_config(HOME_CONFIG, 'gripper-down ready')
+        return False
+
     def run_mission(self):
         log = self.get_logger()
         log.info('=== MISSION: START ===')
@@ -340,13 +412,11 @@ class Mission(NavAndPick):
         if not self.navigate_to(self.compute_approach_goal(box_map, robot_map)):
             log.error('Approach navigation failed -- aborting.')
             return
-        if not self.servo_to_box(box_map):
-            log.error('Visual approach failed -- aborting.')
-            return
 
-        # PICK
-        if not self.pick_up_box():
-            log.error('Pick failed -- aborting.')
+        # APPROACH + PICK: gripper-down claw -- drive the box under the gripper in
+        # one continuous motion, then descend straight onto it.
+        if not self.claw_pick(box_map):
+            log.error('Claw pick failed -- aborting.')
             return
 
         # DELIVER (carry the box to the delivery point)
