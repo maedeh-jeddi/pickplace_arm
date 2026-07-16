@@ -39,13 +39,14 @@ from pickplace_arm_bringup.search_and_pick import (
     SearchAndPick, SEARCH_POSITION, SEARCH_PITCH, SPIN_ANGULAR, SPIN_STEP_RAD,
     SPIN_SETTLE_SEC, SPIN_STEPS_PER_REV)
 
-# How far in front of the box Nav2 should stop. Kept at ~1 m (not right on top
-# of the box): Nav2 settles cleanly on an open spot instead of dancing around a
-# tight goal next to the box -- which used to trigger Nav2's recovery Spin (the
-# "full rotation on itself" near the target). The map-independent visual servo
-# then closes the last metre precisely. 1 m keeps the box in both the front
-# camera's range and the search pose's [0.45,1.1] m detection band on arrival.
-APPROACH_DIST = 1.0
+# How far in front of the box Nav2 should stop. ~1.4 m keeps the box clear of
+# the front camera's near blind zone (it is pitched down, so a box ~1 m away
+# falls below its view) -- if Nav2 stopped closer the front-cam approach saw
+# nothing and spun the chassis to hunt for the box. At ~1.4 m the box sits
+# comfortably in the front camera's [~1.0, 2.5] m range, so the visual servo
+# drives straight in without rotating. Also far enough that Nav2 settles on an
+# open spot (no recovery Spin). The servo closes the last ~1 m precisely.
+APPROACH_DIST = 1.4
 NAV_TIMEOUT_SEC = 120.0
 
 # Coverage search: if the box isn't seen from the start, drive (via Nav2, so

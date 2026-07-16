@@ -13,7 +13,9 @@
     </joint>
     <!-- initial_value on each position state interface makes the arm SPAWN in
          the "cobra" neutral pose (matches HOME_CONFIG in pick_and_place.py):
-         j1 0, j2 0.4, j3 0.75, j4 3.14, j5 -1.4, j6 0. -->
+         j1 0, j2 0.4, j3 0.75, j4 0, j5 -1.4, j6 0. The wrist roll j4 is 0
+         (not pi) so it already matches the grasp orientation, so the gripper
+         never has to spin 180 deg to pick, and the arm shape is unchanged. -->
     <joint name="joint2">
       <command_interface name="position"/>
       <state_interface name="position">
@@ -31,7 +33,7 @@
     <joint name="joint4">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">3.14</param>
+        <param name="initial_value">0.0</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
@@ -202,11 +204,14 @@
   <gazebo reference="front_camera_link">
     <sensor name="front_rgbd_camera" type="rgbd_camera">
       <topic>/front_camera</topic>
-      <update_rate>15</update_rate>
+      <update_rate>30</update_rate>
       <always_on>1</always_on>
       <visualize>true</visualize>
       <camera>
-        <horizontal_fov>1.047</horizontal_fov>
+        <!-- Wide 90 deg FOV so the box stays in view even when Nav2 leaves the
+             base a little off-heading, so the front-cam approach never has to
+             rotate the chassis to re-acquire it (no spin before arriving). -->
+        <horizontal_fov>1.57</horizontal_fov>
         <image>
           <width>640</width>
           <height>480</height>

@@ -64,10 +64,11 @@ SPIN_STEPS_PER_REV = int(round(2 * math.pi / SPIN_STEP_RAD)) + 1
 BLIND_FORWARD_LINEAR = 0.2      # m/s, when a full spin finds nothing
 BLIND_FORWARD_SEC = 2.0
 
-APPROACH_LINEAR_GAIN = 0.3
-APPROACH_LINEAR_MAX = 0.25      # m/s
-APPROACH_ANGULAR_GAIN = 1.2
-APPROACH_ANGULAR_MAX = 0.6      # rad/s
+APPROACH_LINEAR_GAIN = 0.5
+APPROACH_LINEAR_MAX = 0.35      # m/s
+APPROACH_LINEAR_MIN = 0.08      # m/s floor so it keeps closing on the box
+APPROACH_ANGULAR_GAIN = 1.4
+APPROACH_ANGULAR_MAX = 0.7      # rad/s
 STOP_DISTANCE = 0.46            # m; must stay >= the search pose's ~0.45m
                                  # detection floor (stopping closer makes the
                                  # servo lose the box and wander). Box lands

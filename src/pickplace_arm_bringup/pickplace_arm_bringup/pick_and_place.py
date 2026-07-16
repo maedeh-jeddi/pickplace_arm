@@ -76,8 +76,12 @@ CARRY_POSITION = (0.26, 0.00, 0.18)
 
 # Neutral / "home" arm configuration (joint angles j1..j6): a raised,
 # forward-curling "cobra" posture (user-tuned). The arm also SPAWNS in this
-# pose -- see the initial_value params in pickplace_arm.gazebo.xacro.
-HOME_CONFIG = [0.0, 0.4, 0.75, 3.14, -1.4, 0.0]
+# pose -- see the initial_value params in pickplace_arm.gazebo.xacro. The wrist
+# roll j4 is 0 (not pi) so it already matches the downward-grasp orientation:
+# moving from home to the grasp no longer rolls the gripper ~180 deg (which
+# looked like the gripper "spinning" on arrival). The arm shape is unchanged --
+# j4 only rolls the gripper about the forearm axis.
+HOME_CONFIG = [0.0, 0.4, 0.75, 0.0, -1.4, 0.0]
 
 # Expected box centroid height in base_link frame (ground plane, see add_box):
 # used only as a sanity check against the detected z, not as the commanded z.

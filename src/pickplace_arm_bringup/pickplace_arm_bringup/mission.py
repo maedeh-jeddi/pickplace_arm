@@ -32,7 +32,7 @@ from nav2_msgs.action import NavigateThroughPoses
 from pickplace_arm_bringup.nav_and_pick import NavAndPick, APPROACH_DIST
 from pickplace_arm_bringup.pick_and_place import HOME_CONFIG, scan_quat
 from pickplace_arm_bringup.search_and_pick import (
-    APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX,
+    APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH,
     GRASP_SCAN_POSITION, GRASP_SCAN_PITCH)
 
@@ -48,8 +48,10 @@ PHASE2_HANDOFF_DIST = 0.60
 STOP_DISTANCE_FINE = 0.41
 
 # Hand-off distance from the front-camera coarse approach to the wrist-camera
-# fine approach: close enough that the box is inside the wrist search pose's
-# ~[0.45,1.1] m band, far enough that the front camera still sees it.
+# fine approach. 0.9 m: the wide-FOV front camera keeps the (now centred) box in
+# view and tracks it down this far, then hands to the wrist SEARCH pose while the
+# box is comfortably inside its ~[0.45,1.1] m band -- neither camera loses the
+# box, so the chassis never sweeps.
 FRONT_HANDOFF_DIST = 0.9
 
 # --- mission targets (map frame; map origin = robot's mapping start pose) -----
@@ -170,22 +172,27 @@ class Mission(NavAndPick):
 
     # --- APPROACH: front-cam coarse drive-in, then wrist fine servo ----------
     def _drive_toward(self, dist, bearing, stop_slack):
-        """One short proportional nudge toward a box seen at (dist, bearing),
-        then stop + settle so the next capture is stationary. A small floor on
-        the forward speed guarantees progress across the stop threshold instead
-        of asymptotically stalling just outside it (the caller only invokes this
-        while dist >= the stop distance, so the floor can't overshoot)."""
+        """One proportional nudge toward a box seen at (dist, bearing), then stop
+        + settle so the next capture is stationary. The stride is ADAPTIVE: far
+        from the stop it drives fast for a longer burst (covering ground in few
+        cycles); near the stop it slows to short, precise nudges so it doesn't
+        overshoot into the box. A floor on the speed guarantees progress across
+        the stop threshold instead of stalling just outside it."""
+        margin = max(0.0, dist - stop_slack)
         twist = Twist()
         twist.linear.x = min(APPROACH_LINEAR_MAX,
-                             max(0.06, APPROACH_LINEAR_GAIN * max(0.0, dist - stop_slack)))
+                             max(APPROACH_LINEAR_MIN, APPROACH_LINEAR_GAIN * margin))
         twist.angular.z = max(-APPROACH_ANGULAR_MAX,
                               min(APPROACH_ANGULAR_MAX, APPROACH_ANGULAR_GAIN * bearing))
-        end = time.time() + 0.3
+        # burst length grows with the remaining margin: ~0.25 s creeping up to
+        # the stop, up to ~0.6 s when there's a metre to cover.
+        burst = min(0.6, max(0.25, 0.9 * margin))
+        end = time.time() + burst
         while time.time() < end:
             self.cmd_vel_pub.publish(twist)
             time.sleep(0.05)
         self._stop_base()
-        time.sleep(0.25)
+        time.sleep(0.15)
 
     def _servo_phase(self, detect, stop_dist, stop_slack, sweep_cap, deadline):
         """Servo the base toward the box using `detect` (front or wrist) until
@@ -219,21 +226,55 @@ class Mission(NavAndPick):
                     return 'lost'
         return 'timeout'
 
-    def servo_to_box(self, timeout_sec=70.0):
-        """Two-phase final approach after Nav2 leaves the robot near the box:
-        1) FRONT camera (wide FOV, accurate, map-independent) drives the base to
-           ~FRONT_HANDOFF_DIST and centers the box -- robust to the map-frame
-           goal error; 2) WRIST camera fine-servo to the grasp stop distance.
-        Neither phase ever does a full 360 spin or a blind forward drive (which
-        used to make the robot wander away from the box)."""
+    def _face_box(self, box_map):
+        """Turn in place to point the base at the box's KNOWN map position so the
+        front-camera approach starts with the box centred (Nav2 can arrive up to
+        its yaw tolerance off-heading, which otherwise costs a slow re-acquire
+        sweep). Done OPEN-LOOP as a single bounded turn from one pose reading --
+        a closed feedback loop diverges because the map->base_link yaw lags while
+        the base is rotating. The correction is small (Nav2 already roughly faced
+        the box) and capped, so a bad estimate can't spin the robot away."""
+        log = self.get_logger()
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                'map', 'base_link', rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=1.0))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            return
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        ryaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        bearing = math.atan2(box_map[1] - t.y, box_map[0] - t.x)
+        err = math.atan2(math.sin(bearing - ryaw), math.cos(bearing - ryaw))
+        if abs(err) < 0.12:
+            return
+        err = max(-1.0, min(1.0, err))   # cap the correction at ~57 deg
+        log.info(f'[approach] facing box (turn {math.degrees(err):.0f} deg)')
+        self._rotate_step(err)
+
+    def servo_to_box(self, box_map=None, timeout_sec=70.0):
+        """Final approach after Nav2 leaves the robot near the box. First turn to
+        face the box's known map position (so it's centred, no slow sweep), then:
+        1) FRONT camera (wide FOV, map-independent) drives the base to
+           ~FRONT_HANDOFF_DIST; 2) WRIST SEARCH pose to ~PHASE2_HANDOFF_DIST;
+        3) WRIST grasp-scan pose to the grasp stop distance. No phase ever does a
+        full 360 spin or a blind forward drive."""
         log = self.get_logger()
         log.info('=== MISSION APPROACH: front-cam coarse + wrist fine ===')
         deadline = time.time() + timeout_sec
 
+        if box_map is not None:
+            self._face_box(box_map)
+
         # Phase 1: front camera. The slack (0.3 m inside the hand-off distance)
         # sets the drive-in speed; _servo_phase still stops at FRONT_HANDOFF_DIST.
+        # sweep_cap is small (0.35 rad ~= 20 deg): with the wide-FOV camera and
+        # the face-box pre-turn the box stays in view, so this is only a tiny
+        # re-acquire wiggle if ever needed -- never a chassis spin.
         r = self._servo_phase(self.detect_box_front, FRONT_HANDOFF_DIST,
-                               FRONT_HANDOFF_DIST - 0.3, sweep_cap=1.0,
+                               FRONT_HANDOFF_DIST - 0.3, sweep_cap=0.35,
                                deadline=deadline)
         if r != 'reached':
             log.warn(f'[approach] front-cam phase {r} -- aborting approach')
@@ -299,7 +340,7 @@ class Mission(NavAndPick):
         if not self.navigate_to(self.compute_approach_goal(box_map, robot_map)):
             log.error('Approach navigation failed -- aborting.')
             return
-        if not self.servo_to_box():
+        if not self.servo_to_box(box_map):
             log.error('Visual approach failed -- aborting.')
             return
 
