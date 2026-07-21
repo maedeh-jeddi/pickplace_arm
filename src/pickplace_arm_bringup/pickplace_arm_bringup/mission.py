@@ -317,12 +317,12 @@ class Mission(NavAndPick):
 
     # --- full mission -------------------------------------------------------
     # --- CLAW approach: keep the gripper down, drive the box under it ---------
-    def claw_approach(self, box_map, timeout_sec=60.0):
+    def claw_approach(self, box_map, timeout_sec=60.0, color='blue'):
         """One continuous motion: keep the gripper pointing straight DOWN and use
-        the front (chassis) camera to drive the base until the box sits directly
-        under the gripper -- no stop-and-go, no arm reorientation. The front
-        camera sees the box accurately from ~1.8 m right down to ~0.3 m, so it
-        alone guides the whole approach; the wrist camera isn't used (it points
+        the front (chassis) camera to drive the base until the `color` box sits
+        directly under the gripper -- no stop-and-go, no arm reorientation. The
+        front camera sees the box accurately from ~1.8 m right down to ~0.3 m, so
+        it alone guides the whole approach; the wrist camera isn't used (it points
         down with the gripper). Stops when the box's forward reading reaches
         CLAW_STOP_X (box then actually under the gripper) and is centred."""
         log = self.get_logger()
@@ -334,7 +334,7 @@ class Mission(NavAndPick):
         twist = Twist()
         lost = 0
         while time.time() < deadline:
-            det = self.detect_box_front(timeout_sec=0.25)
+            det = self.detect_box_front(timeout_sec=0.25, color=color)
             if det is not None:
                 lost = 0
                 bx, by, _ = det
@@ -365,16 +365,24 @@ class Mission(NavAndPick):
         log.warn('[claw] approach timed out')
         return False
 
-    def claw_pick(self, box_map):
-        """Continuous claw pick: drive the box under the gripper then descend
-        straight onto it. Retries the drive-in + grab a few times (re-centring
-        each time) and returns False only if it never holds the box."""
+    def claw_pick(self, box_map, color='blue', grasp_z=None, x_offset=None):
+        """Continuous claw pick of the `color` box: drive it under the gripper
+        then descend straight onto it (to grasp_z -- raise for a box on a table).
+        `x_offset` corrects the front camera's forward bias at the final descent;
+        pass a smaller value for a box on a table (see grab_below).
+        Retries the drive-in + grab a few times (re-centring each time) and
+        returns False only if it never holds the box."""
+        from pickplace_arm_bringup.pick_and_place import GRASP_Z, FRONT_X_OFFSET
+        if grasp_z is None:
+            grasp_z = GRASP_Z
+        if x_offset is None:
+            x_offset = FRONT_X_OFFSET
         log = self.get_logger()
         for attempt in range(1, 4):
-            log.info(f'--- claw pick attempt {attempt}/3 ---')
-            if not self.claw_approach(box_map):
+            log.info(f'--- claw pick attempt {attempt}/3 ({color}) ---')
+            if not self.claw_approach(box_map, color=color):
                 return False
-            if self.grab_below():
+            if self.grab_below(grasp_z=grasp_z, color=color, x_offset=x_offset):
                 return True
             log.warn('[claw] grab missed -- re-centring and retrying')
             self.move_config(HOME_CONFIG, 'gripper-down ready')

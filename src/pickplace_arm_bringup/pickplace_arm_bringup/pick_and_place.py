@@ -117,10 +117,17 @@ EXPECTED_BOX_Z = -0.05 + BOX_SIZE / 2.0
 SCAN_POSITION = (0.22, 0.00, 0.40)
 SCAN_PITCH = math.radians(55.0)
 
-# HSV bounds for the box's blue material (ambient/diffuse 0.1 0.5 0.9 ->
-# sRGB ~(26,128,230) -> HSV ~(104,227,230)), widened for shading/noise.
-HSV_LOWER = (95, 120, 60)
-HSV_UPPER = (115, 255, 255)
+# HSV bounds (OpenCV H 0-180) for each box colour. Red wraps around H=0, so it
+# needs TWO ranges. Each entry is a list of (lower, upper) HSV tuples; a pixel
+# matches the colour if it falls in ANY of the ranges.
+COLOR_HSV = {
+    'blue':  [((95, 120, 60), (115, 255, 255))],
+    'green': [((35, 80, 40), (85, 255, 255))],
+    'red':   [((0, 100, 50), (10, 255, 255)), ((170, 100, 50), (180, 255, 255))],
+}
+# Backward-compatible default (the original single blue box).
+HSV_LOWER = COLOR_HSV['blue'][0][0]
+HSV_UPPER = COLOR_HSV['blue'][0][1]
 MIN_VALID_PIXELS = 30
 
 
@@ -330,17 +337,17 @@ class PickAndPlace(Node):
         time.sleep(0.5)
 
     # --- perception ------------------------------------------------------------
-    def detect_box_pose(self, timeout_sec=5.0, debug_save=False):
+    def detect_box_pose(self, timeout_sec=5.0, debug_save=False, color='blue'):
         """Wrist (eye-in-hand) detection: move must already be at the scan pose.
         Returns the box centroid (x, y, z) in base_link, or None."""
-        return self._detect('wrist', timeout_sec, debug_save)
+        return self._detect('wrist', timeout_sec, debug_save, color)
 
-    def detect_box_front(self, timeout_sec=2.0, debug_save=False):
+    def detect_box_front(self, timeout_sec=2.0, debug_save=False, color='blue'):
         """Base-mounted front camera detection (used while driving). Returns the
-        box centroid (x, y, z) in base_link, or None."""
-        return self._detect('front', timeout_sec, debug_save)
+        `color` box centroid (x, y, z) in base_link, or None."""
+        return self._detect('front', timeout_sec, debug_save, color)
 
-    def _detect(self, source, timeout_sec, debug_save=False):
+    def _detect(self, source, timeout_sec, debug_save=False, color='blue'):
         """Waits for a fresh point cloud from the given RGB-D source, HSV-segments
         the blue box, and returns its centroid (x, y, z) in base_link, or None.
         `source` is 'wrist' (/camera/points, camera_link) or 'front'
@@ -388,7 +395,10 @@ class PickAndPlace(Node):
         rgb_img = np.dstack([r, g, b])
 
         hsv = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2HSV)
-        mask = cv2.inRange(hsv, HSV_LOWER, HSV_UPPER)
+        mask = None
+        for lo, hi in COLOR_HSV.get(color, COLOR_HSV['blue']):
+            m = cv2.inRange(hsv, lo, hi)
+            mask = m if mask is None else cv2.bitwise_or(mask, m)
 
         if debug_save:
             cv2.imwrite('/tmp/box_rgb_debug.png', cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR))
@@ -524,25 +534,30 @@ class PickAndPlace(Node):
         self.arm.remove_collision_object(BOX_ID)
         return False
 
-    def grab_below(self):
-        """Claw grab: the box has been driven directly UNDER the gripper-down
-        ready pose. Take a fresh front-camera read of it, descend straight onto
-        that spot, close, verify, then lift and tuck into the carry pose. No
+    def grab_below(self, grasp_z=GRASP_Z, color='blue', x_offset=FRONT_X_OFFSET):
+        """Claw grab: the `color` box has been driven directly UNDER the
+        gripper-down ready pose. Take a fresh front-camera read of it, descend
+        straight onto that spot (to grasp_z -- raise it for a box on a table),
+        close, verify, then lift and tuck into the carry pose. No
         scan/reorientation -- the gripper stays pointing down the whole time.
         Returns True only if the box is actually held (verified via the fingers);
         a miss is retried by the caller re-centring and calling again."""
         log = self.get_logger()
         log.info('=== CLAW GRAB: descend straight down ===')
         self.gripper(GRIP_OPEN, 'open')
-        # fresh read of the box now under the gripper (front cam reads ~2 cm
-        # short -- correct it), then descend onto it.
-        det = self.detect_box_front(timeout_sec=1.5)
+        # Fresh read of the box now under the gripper, then descend onto it.
+        # x_offset corrects the front camera's forward bias; the default is the
+        # value measured for a box on the GROUND. That bias does not hold for a
+        # box raised on a table, and the box is only 4.5 cm wide, so applying it
+        # there puts the jaws on the box's far edge and shoves it away instead of
+        # grasping -- table picks pass a smaller offset.
+        det = self.detect_box_front(timeout_sec=1.5, color=color)
         if det is None:
             log.warn('[claw] box not seen for grab')
             return False
-        bx = min(GRIPPER_X + 0.03, det[0] + FRONT_X_OFFSET)
+        bx = min(GRIPPER_X + 0.03, det[0] + x_offset)
         by = det[1]
-        self.move_pose(bx, by, GRASP_Z, 0.0, cartesian=True,
+        self.move_pose(bx, by, grasp_z, 0.0, cartesian=True,
                        label='claw descend', quat_xyzw=zdown_quat(0.0))
         self.gripper(GRIP_CLOSED, 'grasp')
         if not self.grasp_is_holding():
@@ -553,7 +568,7 @@ class PickAndPlace(Node):
         log.info('[claw] box held between the jaws')
 
         # attach so MoveIt carries it + RViz shows it, lift straight up, carry
-        self.add_box((bx, by), z_center=-0.05 + BOX_SIZE / 2.0)
+        self.add_box((bx, by), z_center=grasp_z - 0.0575)
         self.arm.attach_collision_object(
             id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
         time.sleep(0.5)
