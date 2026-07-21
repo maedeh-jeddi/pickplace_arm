@@ -165,7 +165,9 @@ class NavAndPick(SearchAndPick):
         such a completion as 'arrived' would hand off to the visual servo from
         the wrong place."""
         log = self.get_logger()
-        if not self.nav_client.wait_for_server(timeout_sec=10.0):
+        # Be patient discovering the action server: under heavy sim-startup load
+        # DDS discovery of bt_navigator can take well over 10 s.
+        if not self.nav_client.wait_for_server(timeout_sec=45.0):
             log.error('[nav] NavigateToPose action server unavailable')
             return False
         for attempt in range(retries + 1):

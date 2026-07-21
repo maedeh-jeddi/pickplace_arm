@@ -84,7 +84,8 @@ def generate_launch_description():
     diff_drive_controller_spawner = Node(
         package='controller_manager',
         executable='spawner',
-        arguments=['diff_drive_controller', '--controller-manager', '/controller_manager'],
+        arguments=['diff_drive_controller', '--controller-manager', '/controller_manager',
+                   '--controller-manager-timeout', '60'],
         output='screen',
     )
 
