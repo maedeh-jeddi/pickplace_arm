@@ -3,13 +3,14 @@
   <model name="apriltag_column_3">
     <static>true</static>
     <link name="link">
-      <collision name="pillar_col"><pose>0 0 0.1 0 0 0</pose>
-        <geometry><box><size>0.12 0.12 0.20</size></box></geometry></collision>
-      <visual name="pillar_vis"><pose>0 0 0.1 0 0 0</pose>
-        <geometry><box><size>0.12 0.12 0.20</size></box></geometry>
-        <material><ambient>0.55 0.55 0.6 1</ambient><diffuse>0.6 0.6 0.65 1</diffuse></material></visual>
-      <visual name="tag_vis"><pose>-0.062 0 0.15 0 0 0</pose>
-        <geometry><box><size>0.004 0.10 0.10</size></box></geometry>
+      <collision name="pillar_col"><pose>0 0 0.08 0 0 0</pose>
+        <geometry><box><size>0.12 0.12 0.16</size></box></geometry></collision>
+      <visual name="pillar_vis"><pose>0 0 0.08 0 0 0</pose>
+        <geometry><box><size>0.12 0.12 0.16</size></box></geometry>
+        <material><ambient>0.1 0.5 0.9 1</ambient><diffuse>0.1 0.5 0.9 1</diffuse><specular>0.2 0.2 0.2 1</specular></material></visual>
+      <!-- AprilTag flat on the TOP surface (facing up), read by the gripper/wrist camera -->
+      <visual name="tag_vis"><pose>0 0 0.164 0 0 0</pose>
+        <geometry><box><size>0.08 0.08 0.006</size></box></geometry>
         <material><diffuse>1 1 1 1</diffuse>
           <pbr><metal><albedo_map>tag36h11_2.png</albedo_map><metalness>0</metalness><roughness>1</roughness></metal></pbr>
         </material></visual>
