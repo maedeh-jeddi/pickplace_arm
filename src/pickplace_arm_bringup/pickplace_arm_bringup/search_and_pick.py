@@ -41,13 +41,20 @@ from pickplace_arm_bringup.pick_and_place import (
 # that pick_and_place.run() uses for the final grasp scan covers [0.40,0.50]m,
 # so stopping the base with the box near ~0.45m keeps the handoff in range.
 SEARCH_POSITION = (0.30, 0.00, 0.42)
-SEARCH_PITCH = math.radians(25.0)
+# The wrist camera's mount now has ZERO tilt of its own (see camera_joint in
+# the URDF: it is rigidly aligned with gripper_base, so the camera looks
+# exactly wherever the arm is pointed). The pitch here is the WHOLE downward
+# look angle -- there is no mount contribution to add to it any more. Its
+# value reproduces the original (pre-mount-tuning) camera direction exactly
+# (mount 28.6deg + pitch 25deg = 53.6deg total, all from pitch now), so the
+# detection ranges tuned below are unchanged.
+SEARCH_PITCH = math.radians(53.6)
 # Grasp-scan pose used by run() to re-detect the box right before grasping.
 # Steeper than the search pose so its detection band ([0.40,0.70]m) reaches
 # below the search pose's ~0.45m floor and comfortably covers the ~0.43m stop
 # distance -- which is also within the shortened arm's ~0.45m grasp reach.
 GRASP_SCAN_POSITION = (0.30, 0.00, 0.42)
-GRASP_SCAN_PITCH = math.radians(38.0)
+GRASP_SCAN_PITCH = math.radians(66.6)
 
 # --- search state machine tuning ------------------------------------------------
 # Search rotates in discrete STEPS (rotate a fixed increment, stop, let the

@@ -12,12 +12,14 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 
 def generate_launch_description():
-    """Mission 2 bringup: sort 3 coloured boxes off a table onto 3 AprilTag
-    columns (10/15/20 cm), then park.
+    """Mission 2 bringup: sort 3 coloured boxes off a table onto 3 matching-
+    coloured columns (8/12/16 cm), then park.
 
-    Gazebo (warehouse) + MoveIt + AMCL + Nav2 + apriltag_ros (front camera) +
-    the table/boxes/columns spawned at fixed spots + the mission_2 behaviour,
-    staged with timers. RViz on by default (use_rviz:=false to save RAM).
+    Gazebo (warehouse) + MoveIt + AMCL + Nav2 + the table/boxes/columns
+    spawned at fixed spots + the mission_2 behaviour, staged with timers.
+    RViz on by default (use_rviz:=false to save RAM). No apriltag_ros: column
+    alignment is done with the front camera's colour-blob detector (same as
+    the box pick), not an AprilTag read, so the arm/wrist never reorients.
     """
     desc_share = get_package_share_directory('pickplace_arm_description')
     bringup_share = get_package_share_directory('pickplace_arm_bringup')
@@ -57,27 +59,14 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(bringup_share, 'launch', 'nav2.launch.py')))
 
-    # AprilTag detector on the WRIST/gripper camera (publishes TF
-    # camera_optical_link -> tag36h11:<id>). The tags sit flat on the column
-    # tops, so the arm dips the wrist camera over each column to read its tag.
-    # size = tag edge in metres (the 0.08 m tag box, texture ~0.9 -> ~0.072).
-    # detector.decimate=1.0 (no downsampling) for the small close-range tags.
-    apriltag = Node(
-        package='apriltag_ros', executable='apriltag_node', name='apriltag',
-        output='screen',
-        parameters=[sim, {'family': '36h11', 'size': 0.072, 'max_hamming': 0,
-                          'detector.decimate': 1.0}],
-        remappings=[('image_rect', '/camera/image'),
-                    ('camera_info', '/camera/camera_info')])
-
-    # table (top at 0.10), 3 colour boxes on it, 3 AprilTag columns
+    # table (top at 0.10), 3 colour boxes on it, 3 matching-coloured columns
     table = spawn('table', 'table', 2.30, 0.0, 0.05)
     boxes = [spawn('box_red', 'box_red', 2.30, -0.16, 0.1225),
              spawn('box_green', 'box_green', 2.30, 0.0, 0.1225),
              spawn('box_blue', 'box_blue', 2.30, 0.16, 0.1225)]
-    # columns rotated 180 deg so their tag face points +x, toward the robot
-    # approaching from the open table side -- no routing around them. 1 m closer
-    # to the table (x=-1.0) than before.
+    # yaw is irrelevant now (square column body, colour-detected, no tag to
+    # face) -- kept from an earlier layout. 1 m closer to the table
+    # (x=-1.0) than before, no routing around them.
     columns = [spawn('apriltag_column_1', 'apriltag_column_1', -1.0, -0.30, 0.0, 3.14159),
                spawn('apriltag_column_2', 'apriltag_column_2', -1.0, 0.0, 0.0, 3.14159),
                spawn('apriltag_column_3', 'apriltag_column_3', -1.0, 0.30, 0.0, 3.14159)]
@@ -120,9 +109,8 @@ def generate_launch_description():
         # Stagger the heavy stages well apart -- on this box everything starting
         # at once starves the controller_manager / nav2 lifecycle and the bringup
         # aborts. Let controllers + localization settle before nav2, and nav2
-        # before the mission; apriltag (CPU-heavy) starts last, near placement.
+        # before the mission.
         TimerAction(period=20.0, actions=[map_server, amcl, localization_lifecycle]),
         TimerAction(period=35.0, actions=[nav2]),
-        TimerAction(period=70.0, actions=[apriltag]),
         TimerAction(period=60.0, actions=[mission]),
     ])

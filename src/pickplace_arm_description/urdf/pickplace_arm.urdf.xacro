@@ -229,7 +229,13 @@
   <joint name="front_camera_joint" type="fixed">
     <parent link="base_link"/>
     <child link="front_camera_link"/>
-    <origin xyz="0.205 0 0.03" rpy="0 0.20 0"/>
+    <!-- Zero rpy: the camera is rigidly aligned with base_link, so it always
+         points exactly along the chassis's own forward direction, with no
+         extra tilt to account for. Its wide 90deg horizontal FOV gives a
+         ~74deg vertical FOV; verify empirically (not just by this geometry
+         argument) that it still detects a table-height box from this mount
+         height at the distances the search/approach logic actually uses. -->
+    <origin xyz="0.205 0 0.01" rpy="0 0 0"/>
   </joint>
 
   <link name="front_camera_optical_link"/>
@@ -477,7 +483,17 @@
   <joint name="camera_joint" type="fixed">
     <parent link="gripper_base"/>
     <child link="camera_link"/>
-    <origin xyz="0.04 0 0.02" rpy="0 0.5 0"/>
+    <!-- Zero rpy: the camera is rigidly aligned with gripper_base, so it
+         always looks exactly along the gripper's own local forward axis:
+         whatever the commanded arm orientation is, that is exactly what the
+         camera sees, with no extra per-camera tilt to compensate for.
+         Consequence: at zdown_quat (gripper pointing straight down, used for
+         grasp/carry/place) the camera looks purely horizontal, not downward,
+         so it cannot see anything below the gripper in that orientation.
+         Reading a tag or scanning for a box therefore needs the arm actually
+         pitched forward-down (scan_quat), not zdown; see SCAN_PITCH-style
+         constants in pick_and_place.py/search_and_pick.py/mission_2.py. -->
+    <origin xyz="0.04 0 0.01" rpy="0 0 0"/>
   </joint>
 
   <link name="camera_optical_link"/>

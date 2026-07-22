@@ -81,7 +81,25 @@ MAX_GRASP_ATTEMPTS = 3
 
 # Compact "carry" pose: box held low and centered over the base so it rides
 # stably while the mobile base drives to the delivery point.
-CARRY_POSITION = (0.26, 0.00, 0.18)
+# z raised 0.18 -> 0.30 to clear the LIDAR (sits at x=0.14, z=0.06; its scan
+# only excludes a 90deg wedge directly BEHIND it, not in front -- at z=0.18
+# the held box, hanging below gripper_base since the fingers extend down when
+# zdown-oriented, dipped into the LIDAR's forward scan plane and
+# self-detected as an obstacle 0.12-0.14m dead ahead, which Nav2 read as
+# "collision ahead" with no recovery able to clear it since the box is still
+# there afterward). BUT 0.30 turned out unreachable from the post-lift arm
+# config without a 180deg base-yaw flip: compute_ik seeded from the real
+# post-'claw lift' joint state finds a smooth, same-branch solution up to
+# EXACTLY z=0.26 (j1 stays ~0), and NO_IK_SOLUTION or a flipped branch
+# (j1 jumps to +/-pi) for everything above that -- `_move_pose_direct`'s
+# strict, seeded-IK carry move (deliberately never falls back to an unseeded
+# pose plan while holding the box) correctly refused the flip and failed
+# every time, so the mission re-opened the gripper each attempt ("release-
+# after-failed-carry") and looked like the box kept falling out mid-carry.
+# 0.26 is therefore the ceiling for THIS branch -- verified via a
+# /compute_ik sweep (x 0.16-0.26, z 0.26-0.30) that 0.26 is the highest z
+# reachable without a flip at any nearby x.
+CARRY_POSITION = (0.26, 0.00, 0.26)
 
 # Neutral / "ready" arm configuration (joint angles j1..j6): the gripper points
 # STRAIGHT DOWN, reaching ~0.38 m ahead at ~0.22 m height -- a "claw" ready pose.
@@ -112,10 +130,15 @@ EXPECTED_BOX_Z = -0.05 + BOX_SIZE / 2.0
 # ground plane; verify/tune empirically (see detect_box_pose debug dump).
 # Position re-derived via /compute_ik sweep after the arm links were
 # shortened 30% (old reach ~0.94m -> new ~0.66m); (0.40, 0.60) is no longer
-# reachable. Pitch is unchanged -- it's a property of the camera geometry,
-# not the arm length.
+# reachable.
+# Pitch: the wrist camera's mount now has ZERO tilt of its own (see
+# camera_joint in the URDF -- rigidly aligned with gripper_base), so this
+# pitch is the WHOLE downward look angle rather than a delta on top of a
+# mount tilt. Its value reproduces the original (pre-mount-tuning) camera
+# direction exactly (mount 28.6deg + pitch 55deg = 83.6deg total, all from
+# pitch now), so this pose's tuned detection range is unchanged.
 SCAN_POSITION = (0.22, 0.00, 0.40)
-SCAN_PITCH = math.radians(55.0)
+SCAN_PITCH = math.radians(83.6)
 
 # HSV bounds (OpenCV H 0-180) for each box colour. Red wraps around H=0, so it
 # needs TWO ranges. Each entry is a list of (lower, upper) HSV tuples; a pixel
@@ -230,7 +253,7 @@ class PickAndPlace(Node):
 
     # --- primitives ----------------------------------------------------------
     def move_pose(self, x, y, z, yaw=0.0, cartesian=False, label='',
-                  quat_xyzw=None):
+                  quat_xyzw=None, strict=False):
         self.get_logger().info(
             f'[arm] -> ({x:.2f},{y:.2f},{z:.2f}) yaw={yaw:.2f} '
             f'{"cartesian " if cartesian else ""}{label}')
@@ -241,19 +264,22 @@ class PickAndPlace(Node):
                                   cartesian=True, cartesian_fraction_threshold=0.0)
             ok = self.arm.wait_until_executed()
         else:
-            ok = self._move_pose_direct(x, y, z, quat_xyzw, label)
+            ok = self._move_pose_direct(x, y, z, quat_xyzw, label, strict)
         if not ok:
             self.get_logger().warn(f'[arm] motion failed: {label}')
         time.sleep(0.5)
         return ok
 
-    def _move_pose_direct(self, x, y, z, quat_xyzw, label):
+    def _move_pose_direct(self, x, y, z, quat_xyzw, label, strict=False):
         """Non-cartesian pose move that takes the SIMPLE, direct path: solve IK
         seeded from the CURRENT joint state (so the nearest configuration is
         chosen -- no elbow/wrist flip), then plan a short joint-space move to
         it. A bare pose goal lets MoveIt pick any IK solution, which is often a
-        far one that swings the joints all the way around. Falls back to a plain
-        pose plan if IK or the joint move fails."""
+        far one that swings the joints all the way around -- so with
+        `strict=True` (used for every move while the arm is holding a box) we
+        never fall back to it: a failed seed/joint-move just fails the whole
+        call, rather than risking exactly the kind of big uncontrolled swing
+        that could visibly rotate the arm and shake the box loose."""
         sol = self.arm.compute_ik(position=(x, y, z), quat_xyzw=quat_xyzw)
         cfg = self._extract_arm_config(sol) if sol is not None else None
         if cfg is not None:
@@ -261,11 +287,13 @@ class PickAndPlace(Node):
             self.arm.move_to_configuration(cfg)
             if self.arm.wait_until_executed():
                 return True
-            self.get_logger().warn(
-                f'[arm] direct joint move failed for {label}; trying pose plan')
+            self.get_logger().warn(f'[arm] direct joint move failed for {label}'
+                                   + ('' if strict else '; trying pose plan'))
         else:
-            self.get_logger().warn(
-                f'[arm] IK seed failed for {label}; using pose plan')
+            self.get_logger().warn(f'[arm] IK seed failed for {label}'
+                                   + ('' if strict else '; using pose plan'))
+        if strict:
+            return False
         self.arm.move_to_pose(position=(x, y, z), quat_xyzw=quat_xyzw,
                               cartesian=False, cartesian_fraction_threshold=0.0)
         return self.arm.wait_until_executed()
@@ -517,13 +545,22 @@ class PickAndPlace(Node):
             #    from being jerked loose.
             self.move_pose(bx, by, APPROACH_Z, 0.0, cartesian=True, label='lift')
             cx, cy, cz = CARRY_POSITION
-            self.move_pose(cx, cy, cz, 0.0, cartesian=False, label='carry')
+            # strict: never fall back to an unseeded pose plan while holding
+            # the box (see _move_pose_direct) -- it can pick a wildly
+            # different joint solution and swing the arm around.
+            carry_ok = self.move_pose(cx, cy, cz, 0.0, cartesian=False,
+                                      label='carry', strict=True)
 
             # 5) confirm the box survived the lift + carry (didn't slip out).
-            if not self.grasp_is_holding():
+            if not carry_ok or not self.grasp_is_holding():
                 log.warn('[pick] box slipped during lift/carry -- retrying')
                 self.arm.detach_collision_object(BOX_ID)
                 self.arm.remove_collision_object(BOX_ID)
+                # If the carry move itself failed (rather than the box slipping
+                # loose on its own), the jaws are still PHYSICALLY closed on it
+                # -- open them so the retry starts from an empty gripper.
+                if not carry_ok:
+                    self.gripper(GRIP_OPEN, 'release-after-failed-carry')
                 continue
 
             log.info('=== PICK UP: DONE (box held) ===')
@@ -575,7 +612,21 @@ class PickAndPlace(Node):
         self.move_pose(bx, by, READY_Z, 0.0, cartesian=True,
                        label='claw lift', quat_xyzw=zdown_quat(0.0))
         cx, cy, cz = CARRY_POSITION
-        self.move_pose(cx, cy, cz, 0.0, cartesian=False, label='carry')
+        # strict: never fall back to an unseeded pose plan while holding the
+        # box -- that fallback picks ANY IK solution, including ones that
+        # swing the joints all the way around, which can shake the box loose.
+        if not self.move_pose(cx, cy, cz, 0.0, cartesian=False, label='carry',
+                              strict=True):
+            log.warn('[claw] carry move failed -- releasing so the retry '
+                     'starts from a clean, empty-gripper state')
+            self.arm.detach_collision_object(BOX_ID)
+            self.arm.remove_collision_object(BOX_ID)
+            # The jaws are still PHYSICALLY closed on the box here (detaching
+            # only clears MoveIt's bookkeeping) -- open them too, otherwise the
+            # retry re-approaches with a box already clamped in the gripper,
+            # which is what turned one failed carry into a fully failed pick.
+            self.gripper(GRIP_OPEN, 'release-after-failed-carry')
+            return False
         if not self.grasp_is_holding():
             log.warn('[claw] box slipped during lift/carry')
             self.arm.detach_collision_object(BOX_ID)

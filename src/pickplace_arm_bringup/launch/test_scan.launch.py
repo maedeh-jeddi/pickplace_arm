@@ -13,7 +13,6 @@ def generate_launch_description():
     apriltag(on the wrist /camera) + one column spawned right in front of the
     stationary robot. No nav/AMCL/mission -- iterate the arm scan pose fast."""
     desc_share = get_package_share_directory('pickplace_arm_description')
-    models = os.path.join(desc_share, 'models')
     sim = {'use_sim_time': True}
 
     gazebo = IncludeLaunchDescription(
@@ -35,16 +34,12 @@ def generate_launch_description():
         remappings=[('image_rect', '/camera/image'),
                     ('camera_info', '/camera/camera_info')])
 
-    # column_1 (tag 0, 10 cm) ~0.45 m in front of the robot (robot faces +x)
-    column = Node(package='ros_gz_sim', executable='create', output='screen',
-                  arguments=['-file', os.path.join(models, 'apriltag_column_1',
-                                                   'model.sdf'),
-                             '-name', 'apriltag_column_1',
-                             '-x', '0.45', '-y', '0.0', '-z', '0.0'])
-
+    # No column spawned here -- the sweep driver spawns/removes one column at
+    # a time at the real approach spot (0.45, 0, 0) via ros_gz_sim create / gz
+    # service remove, so the arm can be tested at its ACTUAL fixed scan pose
+    # (mission_2 never re-aims the arm's y -- the base does that via Nav2).
     return LaunchDescription([
         gazebo,
         move_group,
-        TimerAction(period=9.0, actions=[column]),
         TimerAction(period=12.0, actions=[apriltag]),
     ])
