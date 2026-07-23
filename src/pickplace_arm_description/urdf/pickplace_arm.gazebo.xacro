@@ -91,18 +91,23 @@
   </gazebo>
 
   <!-- High friction + soft contact on the finger pads so the gripper can
-       actually hold a box by friction in Gazebo Harmonic. -->
+       actually hold a box by friction in Gazebo Harmonic. Raised 3.5 -> 5.0
+       (and the box models' own mu 2.0 -> 4.0) after the box intermittently
+       slipped out of a good grasp during the lift/carry in the heavier Ionic
+       world: under higher physics load the friction hold was marginal, so the
+       box occasionally pivoted free mid-carry. The box's mu was the lower
+       (limiting) of the two contacting surfaces, so both were raised. -->
   <gazebo reference="left_finger">
-    <mu1>3.5</mu1>
-    <mu2>3.5</mu2>
+    <mu1>5.0</mu1>
+    <mu2>5.0</mu2>
     <kp>1e6</kp>
     <kd>1.0</kd>
     <minDepth>0.001</minDepth>
     <maxVel>0.0</maxVel>
   </gazebo>
   <gazebo reference="right_finger">
-    <mu1>3.5</mu1>
-    <mu2>3.5</mu2>
+    <mu1>5.0</mu1>
+    <mu2>5.0</mu2>
     <kp>1e6</kp>
     <kd>1.0</kd>
     <minDepth>0.001</minDepth>

@@ -32,6 +32,7 @@ setup(
             'nav_and_pick = pickplace_arm_bringup.nav_and_pick:main',
             'mission = pickplace_arm_bringup.mission:main',
             'mission_2 = pickplace_arm_bringup.mission_2:main',
+            'mission_2_ionic = pickplace_arm_bringup.mission_2:main_ionic',
             'teleop_key = pickplace_arm_bringup.teleop_key:main',
         ],
     },

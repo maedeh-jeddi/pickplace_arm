@@ -188,8 +188,14 @@ class PickAndPlace(Node):
         self.arm = MoveIt2(
             node=self, joint_names=ARM_JOINTS, base_link_name='base_link',
             end_effector_name=GRASP_LINK, group_name='arm', callback_group=cbg)
-        self.arm.max_velocity = 0.30
-        self.arm.max_acceleration = 0.30
+        # Kept slow (0.20, was 0.30): the box is held by friction, and the
+        # slip that occasionally dropped it happened DYNAMICALLY during the
+        # lift/carry, not statically -- a gentler carry keeps the inertial
+        # load on the friction grip below the point where the box breaks free
+        # (especially in a heavier world where the physics step is coarser
+        # under load). Pairs with the raised finger/box friction.
+        self.arm.max_velocity = 0.20
+        self.arm.max_acceleration = 0.20
 
         # Scan pose used by run() to locate the box before grasping. Kept as
         # instance attributes so subclasses (e.g. the mobile search-and-pick)
@@ -370,16 +376,30 @@ class PickAndPlace(Node):
         Returns the box centroid (x, y, z) in base_link, or None."""
         return self._detect('wrist', timeout_sec, debug_save, color)
 
-    def detect_box_front(self, timeout_sec=2.0, debug_save=False, color='blue'):
+    def detect_box_front(self, timeout_sec=2.0, debug_save=False, color='blue',
+                         gate=None):
         """Base-mounted front camera detection (used while driving). Returns the
-        `color` box centroid (x, y, z) in base_link, or None."""
-        return self._detect('front', timeout_sec, debug_save, color)
+        `color` box centroid (x, y, z) in base_link, or None. `gate` (see
+        _detect) optionally restricts detection to a camera-frame box, which
+        rejects same-coloured background clutter."""
+        return self._detect('front', timeout_sec, debug_save, color, gate)
 
-    def _detect(self, source, timeout_sec, debug_save=False, color='blue'):
+    def _detect(self, source, timeout_sec, debug_save=False, color='blue',
+                gate=None):
         """Waits for a fresh point cloud from the given RGB-D source, HSV-segments
         the blue box, and returns its centroid (x, y, z) in base_link, or None.
         `source` is 'wrist' (/camera/points, camera_link) or 'front'
-        (/front_camera/points, front_camera_link)."""
+        (/front_camera/points, front_camera_link).
+
+        `gate`, if given, is (xmin, xmax, ymin, ymax, zmin, zmax) in the CAMERA
+        frame (X-forward, Y-left, Z-up) -- only coloured pixels whose 3D point
+        falls inside this box are counted. In a plain/empty world this is
+        unnecessary, but in a cluttered, colourful world (e.g. the Ionic
+        restaurant, whose walls/beams/pillars are the SAME navy blue as the
+        blue box/column) the raw HSV blob is dominated by background
+        architecture; gating to where the target is actually expected (dead
+        ahead, low, and near, for a column the robot has driven up to) is what
+        lets the colour servo lock onto the target instead of the walls."""
         log = self.get_logger()
         if source == 'front':
             lock, cloud_frame = self._front_lock, 'front_camera_link'
@@ -433,10 +453,15 @@ class PickAndPlace(Node):
             cv2.imwrite('/tmp/box_mask_debug.png', mask)
 
         valid = (mask.astype(bool) & np.isfinite(x) & np.isfinite(y) & np.isfinite(z))
+        if gate is not None:
+            gx0, gx1, gy0, gy1, gz0, gz1 = gate
+            valid = valid & (x >= gx0) & (x <= gx1) & (y >= gy0) & (y <= gy1) \
+                          & (z >= gz0) & (z <= gz1)
         n_valid = int(valid.sum())
         if n_valid < MIN_VALID_PIXELS:
-            log.error(f'[detect] only {n_valid} valid blue pixels found (need '
-                      f'>= {MIN_VALID_PIXELS}) -- box not found')
+            log.error(f'[detect] only {n_valid} valid {color} pixels found (need '
+                      f'>= {MIN_VALID_PIXELS}){" in gate" if gate else ""} '
+                      f'-- box not found')
             return None
 
         cx, cy, cz = float(x[valid].mean()), float(y[valid].mean()), float(z[valid].mean())

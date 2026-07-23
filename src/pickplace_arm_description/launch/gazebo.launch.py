@@ -17,6 +17,12 @@ def generate_launch_description():
     # the WORLD env var pointing at another .sdf under worlds/ if needed.
     world_name = os.environ.get('WORLD', 'warehouse.sdf')
     world_file = os.path.join(pkg_description, 'worlds', world_name)
+    # World origin (0,0) is only guaranteed clear for the worlds built for
+    # this project (warehouse/pickplace) -- a world like ionic.sdf (a dense,
+    # furnished interior) can have the origin sitting inside furniture, so
+    # SPAWN_X/SPAWN_Y let a different world pick a clear spot to spawn into.
+    spawn_x = os.environ.get('SPAWN_X', '0.0')
+    spawn_y = os.environ.get('SPAWN_Y', '0.0')
 
     robot_description = {
         'robot_description': ParameterValue(
@@ -24,6 +30,14 @@ def generate_launch_description():
         )
     }
 
+    # HEADLESS=1 runs the Gazebo SERVER only (no GUI, `-s`). Needed for heavy
+    # worlds like ionic.sdf: its GUI carries a GlobalIlluminationVct plugin
+    # (high-quality voxel GI, 9 light bounces) that drags the real-time factor
+    # down to ~0.28, which starves the LIDAR (drops to ~3 Hz) and makes
+    # slam_toolbox's scan matcher fail during rotation -- the map->base_link
+    # TF freezes while the robot physically spins. Sensor rendering (RGB-D,
+    # LIDAR) happens on the SERVER, so it is unaffected by dropping the GUI.
+    gz_flags = '-s -r ' if os.environ.get('HEADLESS') == '1' else '-r '
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -34,7 +48,7 @@ def generate_launch_description():
         ),
         # gz_version 8 = Gazebo Harmonic
         launch_arguments={
-            'gz_args': '-r ' + world_file,
+            'gz_args': gz_flags + world_file,
             'gz_version': '8',
         }.items(),
     )
@@ -53,6 +67,8 @@ def generate_launch_description():
         arguments=[
             '-topic', '/robot_description',
             '-name', 'pickplace_arm',
+            '-x', spawn_x,
+            '-y', spawn_y,
             # base_link (the root) sits one wheel-radius above the ground so
             # the wheels touch the floor; base_footprint hangs below it.
             '-z', '0.05'
