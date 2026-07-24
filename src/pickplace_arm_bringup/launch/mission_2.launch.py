@@ -13,7 +13,7 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 def generate_launch_description():
     """Mission 2 bringup: sort 3 coloured boxes off a table onto 3 matching-
-    coloured columns (8/12/16 cm), then park.
+    coloured columns (8/12/10 cm), then park.
 
     Gazebo (warehouse) + MoveIt + AMCL + Nav2 + the table/boxes/columns
     spawned at fixed spots + the mission_2 behaviour, staged with timers.

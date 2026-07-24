@@ -3,9 +3,10 @@
 
 Layout (map frame; map origin = robot's spawn pose):
   * A low table holds 3 boxes in a line -- red, green, blue.
-  * 3 columns elsewhere, same x, y spaced 0.3 m, heights 8/12/16 cm -- kept low
-    so every placement sits well inside the arm's accurate reach -- each
-    coloured to match its box (red/green/blue).
+  * 3 columns elsewhere, same x, y spaced 0.3 m, heights 8/12/10 cm -- kept low
+    so every placement sits well inside the arm's accurate reach (and so the
+    post-placement retreat clears the just-placed box) -- each coloured to match
+    its box (red/green/blue).
 
 For each box i (in order): drive to the table, claw-pick box i by colour,
 drive to column i, centre the BASE on it (front camera, colour blob -- same
@@ -35,7 +36,7 @@ from rcl_interfaces.srv import SetParameters
 
 from pickplace_arm_bringup.mission import Mission
 from pickplace_arm_bringup.pick_and_place import (
-    HOME_CONFIG, GRIPPER_X, GRIP_OPEN, BOX_ID, BOX_SIZE, GRASP_LINK,
+    HOME_CONFIG, GRIPPER_X, GRIPPER_Y, GRIP_OPEN, BOX_ID, BOX_SIZE, GRASP_LINK,
     FINGER_LINKS, zdown_quat)
 from pickplace_arm_bringup.search_and_pick import (
     APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
@@ -45,12 +46,10 @@ from pickplace_arm_bringup.search_and_pick import (
 TABLE_APPROACH = (1.45, 0.0, 0.0)      # pose the robot drives to before picking
 TABLE_Z = 0.10                          # table-top height
 TABLE_GRASP_Z = 0.13                    # gripper_base z to grasp a box on the table
-# The front camera's ~2 cm "reads short" bias was calibrated for a box on the
-# GROUND and does not hold for one raised on the table: applying it there lands
-# the jaws on the far edge of the 4.5 cm box and shoves it off instead of
-# grasping (this is what kept knocking the green box away). Descend on the
-# measured position instead.
-TABLE_X_OFFSET = 0.0
+# (There is no TABLE_X_OFFSET any more: the front camera's forward "bias" was
+# never a calibration constant, it is the near-face-vs-centre geometry, and
+# detect_box_front(depth=...) now resolves it from the blob's own extent for
+# the ground box and the table box alike -- see pick_and_place._detect.)
 BOXES = [                               # (colour, box map position) in pick order
     ('red',   (2.30, -0.16)),
     ('green', (2.30,  0.00)),
@@ -59,7 +58,13 @@ BOXES = [                               # (colour, box map position) in pick ord
 COLUMNS = [                             # (column id, height, column map x,y)
     (0, 0.08, (-1.0, -0.30)),  # red   -> column 1,  8 cm
     (1, 0.12, (-1.0,  0.00)),  # green -> column 2, 12 cm
-    (2, 0.16, (-1.0,  0.30)),  # blue  -> column 3, 16 cm
+    # Column 3 was 16 cm, but at that height the post-placement retreat (capped
+    # at OVER_Z_CEILING=0.21 by arm reach) cleared the just-placed box top
+    # (0.16 + 0.045 = 0.205) by only ~0.5 cm, so the gripper clipped the box on
+    # the way up. Lowered to 10 cm (box top 0.145, ~6.5 cm clearance -- the same
+    # margin the two shorter columns already have). The model.sdf for
+    # apriltag_column_3 was shortened to match.
+    (2, 0.10, (-1.0,  0.30)),  # blue  -> column 3, 10 cm
 ]
 FINAL_POSE = (0.0, -1.8, 0.0)
 
@@ -78,15 +83,29 @@ FINAL_POSE = (0.0, -1.8, 0.0)
 # detected, approach aborted). Same reason the old AprilTag design tightened
 # Nav2's arrival heading for this goal; still needed here for the same reason.
 NAV_STANDOFF = 0.42     # Nav2 stops this far in front of the column
-# Stop the approach when the column's front-camera reading reaches this x
-# (mirrors CLAW_STOP_X for the box pick). The column is a 0.12 m cube, so the
-# front camera -- which only sees its near face -- reads its centre as
-# COLUMN_X_OFFSET further away than that face; tuned empirically (compare the
-# front-cam reading at stop against the column's known map x/y via TF) the
-# same way FRONT_X_OFFSET/TABLE_X_OFFSET were calibrated for the box.
-COLUMN_STOP_X = GRIPPER_X - 0.02
-COLUMN_Y_TOL = 0.02
-COLUMN_X_OFFSET = 0.06
+COLUMN_SIZE = 0.12      # column footprint (see models/apriltag_column_*/model.sdf)
+# Stop the approach when the column's CENTRE reads this far ahead -- i.e. right
+# under the gripper-down pose, exactly as CLAW_STOP_X does for the box pick.
+# approach_column reads the column with depth=COLUMN_SIZE, so the reading is the
+# centre of the column, not the centre of the face pointing at the camera (the
+# front camera only ever sees that near face, 0.06 m closer).
+#
+# This used to be GRIPPER_X - 0.02 against the raw FACE reading, i.e. a centre
+# at 0.42 -- which is NAV_STANDOFF, so the stop condition was already true the
+# moment Nav2 arrived and the visual servo never actually corrected x at all;
+# placement inherited Nav2's x error whole. Worse, the arm then had to reach
+# 0.42 but was capped at GRIPPER_X + 0.03 = 0.41, so it always aimed ~1 cm
+# short of the column's centre -- off the middle of the AprilTag, toward the
+# near edge. Stopping at the centre instead puts the column under the arm's
+# nominal 0.38 reach, so nothing is clamped and the servo does real work.
+COLUMN_STOP_X = GRIPPER_X
+# The box is released (not pinched) onto the column, so nothing re-centres it in
+# y the way the closing jaws re-centre a grabbed box -- the placement y is only
+# as good as how well the base centred on the column. Tightened from 0.02 to
+# 0.012 so the drop lands on the middle of the AprilTag. (The arm itself always
+# places on its y=0 centreline; see place_on_column -- it never yaws to chase a
+# measured column y, which would rotate the arm.)
+COLUMN_Y_TOL = 0.012
 
 # nav2_params.yaml deliberately loosens yaw_goal_tolerance to 0.5 rad (~29deg)
 # to stop the skid-steer oscillating (and tripping its own Spin recovery) at a
@@ -145,7 +164,8 @@ class Mission2(Mission):
         twist = Twist()
         lost = 0
         while time.time() < deadline:
-            det = self.detect_box_front(timeout_sec=0.25, color=color)
+            det = self.detect_box_front(timeout_sec=0.25, color=color,
+                                        depth=COLUMN_SIZE)
             if det is not None:
                 lost = 0
                 bx, by, _ = det
@@ -193,17 +213,33 @@ class Mission2(Mission):
         # notwithstanding). Same fix pattern as grab_below's fresh read before
         # descending onto a box.
         time.sleep(0.4)
-        det = self.detect_box_front(timeout_sec=1.5, color=color)
+        det = self.detect_box_front(timeout_sec=1.5, color=color,
+                                    depth=COLUMN_SIZE)
         if det is None:
             log.warn(f'[place] lost sight of column {tag_id} after settling')
             return False
-        px = min(GRIPPER_X + 0.03, det[0] + COLUMN_X_OFFSET)
-        py = det[1]
+        # depth=COLUMN_SIZE makes det[0] the column's CENTRE -- which is where
+        # the AprilTag is centred too -- so the box is lowered onto the middle of
+        # the tag rather than somewhere on the near half of the column top. The
+        # cap is only a reach guard now; after the approach above the centre
+        # reads ~GRIPPER_X, so it should never bite.
+        px = min(GRIPPER_X + 0.03, det[0])
+        # Place on the arm's fixed y=0 centreline, NOT the measured column y:
+        # reaching a sideways y would rotate the shoulder-yaw joint j1, and the
+        # arm must never rotate. The base has already centred on the column in y
+        # (approach_column, |by| <= COLUMN_Y_TOL), so y=0 already sits on the tag
+        # centre; det[1] is used only to sanity-check that below.
+        py = GRIPPER_Y
+        if abs(det[1]) > COLUMN_Y_TOL + 0.01:
+            log.warn(f'[place] column {tag_id} y={det[1]:+.3f} still off the '
+                     f'gripper centreline after approach -- placing on centreline '
+                     f'anyway (no arm yaw); drop may be off-centre in y')
         top_z = height + 0.03            # gripper_base z: box bottom rests on top
         # Cap the "over" clearance to what's actually reachable from the CARRY
-        # branch at this x: a live /compute_ik sweep at x~0.41 found the
-        # same-branch ceiling is z~0.22 (0.22 reachable, 0.23 is not, tested
-        # 3x) -- higher than that needs a branch flip, same failure mode as
+        # branch at this x: a live /compute_ik sweep at x~0.41 (where px used to
+        # be clamped; it is ~0.38 now, slightly closer in and so no worse for
+        # reach) found the same-branch ceiling is z~0.22 (0.22 reachable, 0.23
+        # is not, tested 3x) -- higher needs a branch flip, same failure mode as
         # the CARRY_POSITION bug. The strict carry->over-column move for the
         # 12cm column (over_z = 0.15+0.08 = 0.23) hit exactly this and failed
         # with NO_IK_SOLUTION, aborting with the box still held. 0.21 keeps a
@@ -263,8 +299,7 @@ class Mission2(Mission):
                 log.error('Table navigation failed -- aborting.')
                 return
             box_map = (box_xy[0], box_xy[1])
-            if not self.claw_pick(box_map, color=color, grasp_z=TABLE_GRASP_Z,
-                                  x_offset=TABLE_X_OFFSET):
+            if not self.claw_pick(box_map, color=color, grasp_z=TABLE_GRASP_Z):
                 log.error(f'Failed to pick the {color} box -- aborting.')
                 return
 

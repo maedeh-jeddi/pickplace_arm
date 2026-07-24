@@ -31,7 +31,7 @@ from nav2_msgs.action import NavigateThroughPoses
 
 from pickplace_arm_bringup.nav_and_pick import NavAndPick, APPROACH_DIST
 from pickplace_arm_bringup.pick_and_place import (
-    HOME_CONFIG, scan_quat, GRIPPER_X, GRIPPER_Y)
+    HOME_CONFIG, scan_quat, GRIPPER_X, GRIPPER_Y, BOX_SIZE)
 from pickplace_arm_bringup.search_and_pick import (
     APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH,
@@ -48,11 +48,14 @@ from pickplace_arm_bringup.search_and_pick import (
 PHASE2_HANDOFF_DIST = 0.60
 STOP_DISTANCE_FINE = 0.41
 
-# Claw approach: stop driving when the FRONT camera reads the box this far ahead
-# -- the front cam reads ~0.02 m short, so at 0.36 the box is actually ~0.38 m
-# ahead, directly under the gripper-down ready pose. Centre laterally to within
-# CLAW_Y_TOL (the jaws close in y, so lateral accuracy matters most).
-CLAW_STOP_X = GRIPPER_X - 0.02
+# Claw approach: stop driving when the box's CENTRE is this far ahead -- i.e.
+# directly under the gripper-down ready pose. claw_approach reads the box with
+# depth=BOX_SIZE, so the reading is the box's centre, not its camera-facing
+# face; the threshold is therefore GRIPPER_X itself rather than the old
+# GRIPPER_X - 0.02, which was the same stop distance expressed in the face
+# reading. Centre laterally to within CLAW_Y_TOL (the jaws close in y, so
+# lateral accuracy matters most).
+CLAW_STOP_X = GRIPPER_X
 CLAW_Y_TOL = 0.02
 
 # Hand-off distance from the front-camera coarse approach to the wrist-camera
@@ -323,8 +326,8 @@ class Mission(NavAndPick):
         directly under the gripper -- no stop-and-go, no arm reorientation. The
         front camera sees the box accurately from ~1.8 m right down to ~0.3 m, so
         it alone guides the whole approach; the wrist camera isn't used (it points
-        down with the gripper). Stops when the box's forward reading reaches
-        CLAW_STOP_X (box then actually under the gripper) and is centred."""
+        down with the gripper). Stops when the box's CENTRE reaches CLAW_STOP_X
+        (box then actually under the gripper) and is centred laterally."""
         log = self.get_logger()
         log.info('=== MISSION APPROACH: claw (gripper-down, continuous) ===')
         self.move_config(HOME_CONFIG, 'gripper-down ready')
@@ -334,7 +337,8 @@ class Mission(NavAndPick):
         twist = Twist()
         lost = 0
         while time.time() < deadline:
-            det = self.detect_box_front(timeout_sec=0.25, color=color)
+            det = self.detect_box_front(timeout_sec=0.25, color=color,
+                                        depth=BOX_SIZE)
             if det is not None:
                 lost = 0
                 bx, by, _ = det
@@ -365,24 +369,20 @@ class Mission(NavAndPick):
         log.warn('[claw] approach timed out')
         return False
 
-    def claw_pick(self, box_map, color='blue', grasp_z=None, x_offset=None):
+    def claw_pick(self, box_map, color='blue', grasp_z=None):
         """Continuous claw pick of the `color` box: drive it under the gripper
         then descend straight onto it (to grasp_z -- raise for a box on a table).
-        `x_offset` corrects the front camera's forward bias at the final descent;
-        pass a smaller value for a box on a table (see grab_below).
         Retries the drive-in + grab a few times (re-centring each time) and
         returns False only if it never holds the box."""
-        from pickplace_arm_bringup.pick_and_place import GRASP_Z, FRONT_X_OFFSET
+        from pickplace_arm_bringup.pick_and_place import GRASP_Z
         if grasp_z is None:
             grasp_z = GRASP_Z
-        if x_offset is None:
-            x_offset = FRONT_X_OFFSET
         log = self.get_logger()
         for attempt in range(1, 4):
             log.info(f'--- claw pick attempt {attempt}/3 ({color}) ---')
             if not self.claw_approach(box_map, color=color):
                 return False
-            if self.grab_below(grasp_z=grasp_z, color=color, x_offset=x_offset):
+            if self.grab_below(grasp_z=grasp_z, color=color):
                 return True
             log.warn('[claw] grab missed -- re-centring and retrying')
             self.move_config(HOME_CONFIG, 'gripper-down ready')

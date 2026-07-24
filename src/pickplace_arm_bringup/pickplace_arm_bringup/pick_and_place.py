@@ -32,12 +32,10 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration as RclDuration
 from sensor_msgs.msg import PointCloud2, JointState
 from sensor_msgs_py import point_cloud2
-from geometry_msgs.msg import PointStamped
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 
 import tf2_ros
-import tf2_geometry_msgs  # noqa: F401  (registers PointStamped transform support)
 
 from pymoveit2 import MoveIt2
 
@@ -116,9 +114,16 @@ HOME_CONFIG = [0.0, 0.52, 1.14, -3.14, -1.48, 0.0]
 GRIPPER_X = 0.38
 GRIPPER_Y = 0.0
 READY_Z = 0.22
-# The front camera reads the box's forward distance ~2 cm short of ground truth
-# (measured); add this back when descending onto it.
-FRONT_X_OFFSET = 0.02
+# NOTE: the front camera's old "reads ~2 cm short" fudge factor (FRONT_X_OFFSET)
+# is gone. That bias was never a camera error -- it is pure geometry: the camera
+# only sees an object's NEAR FACE, so the visible-pixel centroid sits ~half the
+# object's depth in front of its true centre (~0.02 for a 4.5 cm box, which is
+# where the 2 cm came from). A single constant cannot be right for objects of
+# different depths, or for the same box on the ground (top face visible, pulling
+# the centroid back) versus raised on a table (near face only) -- which is why
+# the table pick needed its own hand-tuned value and still grasped near the box's
+# edge. `_detect(depth=...)` now reconstructs the true centre from the measured
+# blob extent instead; see there.
 
 # Expected box centroid height in base_link frame (ground plane, see add_box):
 # used only as a sanity check against the detected z, not as the commanded z.
@@ -161,6 +166,16 @@ def qmul(a, b):
             aw * by - ax * bz + ay * bw + az * bx,
             aw * bz + ax * by - ay * bx + az * bw,
             aw * bw - ax * bx - ay * by - az * bz)
+
+
+def quat_to_matrix(qx, qy, qz, qw):
+    """3x3 rotation matrix (numpy) for the xyzw quaternion -- used to rotate a
+    whole point cloud into another frame in one vectorised matmul."""
+    return np.array([
+        [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)],
+        [2 * (qx * qy + qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qw * qx)],
+        [2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx * qx + qy * qy)],
+    ])
 
 
 def zdown_quat(yaw):
@@ -370,16 +385,25 @@ class PickAndPlace(Node):
         Returns the box centroid (x, y, z) in base_link, or None."""
         return self._detect('wrist', timeout_sec, debug_save, color)
 
-    def detect_box_front(self, timeout_sec=2.0, debug_save=False, color='blue'):
+    def detect_box_front(self, timeout_sec=2.0, debug_save=False, color='blue',
+                         depth=None):
         """Base-mounted front camera detection (used while driving). Returns the
-        `color` box centroid (x, y, z) in base_link, or None."""
-        return self._detect('front', timeout_sec, debug_save, color)
+        `color` box centroid (x, y, z) in base_link, or None. Pass `depth` (the
+        object's known x/y size) whenever the result is used to AIM the gripper
+        -- see _detect for why the raw centroid is not the object's centre."""
+        return self._detect('front', timeout_sec, debug_save, color, depth)
 
-    def _detect(self, source, timeout_sec, debug_save=False, color='blue'):
+    def _detect(self, source, timeout_sec, debug_save=False, color='blue',
+                depth=None):
         """Waits for a fresh point cloud from the given RGB-D source, HSV-segments
         the blue box, and returns its centroid (x, y, z) in base_link, or None.
         `source` is 'wrist' (/camera/points, camera_link) or 'front'
-        (/front_camera/points, front_camera_link)."""
+        (/front_camera/points, front_camera_link).
+
+        With `depth` given (the object's known size along x, front-camera only)
+        the returned x/y are the object's CENTRE rather than the mean of its
+        visible pixels -- required whenever the gripper is aimed at the result,
+        because the two differ by up to half the object's depth."""
         log = self.get_logger()
         if source == 'front':
             lock, cloud_frame = self._front_lock, 'front_camera_link'
@@ -439,20 +463,36 @@ class PickAndPlace(Node):
                       f'>= {MIN_VALID_PIXELS}) -- box not found')
             return None
 
-        cx, cy, cz = float(x[valid].mean()), float(y[valid].mean()), float(z[valid].mean())
-        log.info(f'[detect] {n_valid} px -> centroid ({cx:.3f},{cy:.3f},{cz:.3f}) '
-                  f'in {cloud.header.frame_id}')
+        # Keep only the LARGEST connected blob of matching pixels. A stray patch
+        # of the same colour elsewhere in frame barely shifts the pixel MEAN, but
+        # it wrecks the min/max EXTENT the centre estimate below is built from,
+        # so it has to go before any geometry is computed.
+        n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+            valid.astype(np.uint8), connectivity=8)
+        if n_labels > 2:
+            biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            valid = (labels == biggest)
+            n_valid = int(valid.sum())
+            if n_valid < MIN_VALID_PIXELS:
+                log.error(f'[detect] largest {color} blob is only {n_valid} px '
+                          f'(need >= {MIN_VALID_PIXELS}) -- box not found')
+                return None
 
-        # NOTE: the gz-sensors RGBD point cloud generator emits xyz data in
-        # the classical (non-optical) camera axis convention -- X-forward,
-        # Y-left, Z-up -- even though the message's frame_id names the
-        # *optical* frame. Verified empirically: interpreting the points as
-        # the (non-optical) camera link frame is what lines up with the known
-        # box position after transforming into base_link.
-        point = PointStamped()
-        point.header = cloud.header
-        point.header.frame_id = cloud_frame
-        point.point.x, point.point.y, point.point.z = cx, cy, cz
+        # Transform ALL valid points into base_link FIRST, then do every bit of
+        # geometry there. Working in base_link (not the cloud frame) makes the
+        # centre estimate below independent of how the camera is mounted or
+        # aimed: whatever pitch front_camera_joint carries (currently zero --
+        # horizontal), the extent is measured along true base_link axes, so the
+        # centre is right and stays right if the mount is ever re-angled.
+        #
+        # NOTE: the gz-sensors RGBD cloud emits xyz in the classical
+        # (non-optical) camera convention -- X-forward, Y-left, Z-up in the
+        # camera BODY frame -- even though the message frame_id names the optical
+        # frame. That convention is relative to the camera body, so it still
+        # holds once the body is pitched; the TF base_link<-cloud_frame carries
+        # the pitch, so transforming through it lands the points in base_link
+        # correctly (verified empirically for the untilted mount; the body-
+        # relative argument is why it survives the added tilt).
         try:
             tf = self.tf_buffer.lookup_transform(
                 'base_link', cloud_frame, rclpy.time.Time(),
@@ -461,14 +501,59 @@ class PickAndPlace(Node):
                 tf2_ros.ExtrapolationException) as e:
             log.error(f'[detect] TF lookup base_link <- {cloud_frame} failed: {e}')
             return None
-        point_base = tf2_geometry_msgs.do_transform_point(point, tf)
-        bx, by, bz = point_base.point.x, point_base.point.y, point_base.point.z
+        q, t = tf.transform.rotation, tf.transform.translation
+        pts = np.stack([x[valid], y[valid], z[valid]], axis=1)          # (N,3) cloud
+        pts = pts @ quat_to_matrix(q.x, q.y, q.z, q.w).T \
+            + np.array([t.x, t.y, t.z])                                 # -> base_link
+        bxs, bys, bzs = pts[:, 0], pts[:, 1], pts[:, 2]
+
+        if depth is None or source != 'front':
+            if depth is not None:
+                log.warn(f'[detect] depth= is only valid for the front camera '
+                         f'(got source={source}) -- falling back to the mean')
+            # Legacy/coarse reading: the mean of the visible surface. Fine for
+            # "how far away is it" (search, drive-in) -- NOT for aiming the
+            # gripper, since it sits ~depth/2 in front of the object's centre.
+            bx, by = float(bxs.mean()), float(bys.mean())
+        else:
+            # Reconstruct the object's true CENTRE from its visible surface, in
+            # base_link. The depth camera has ~7 mm range noise, which matters
+            # for HOW we read the near face:
+            #   x: does the blob show one face or two?
+            #     * span >= 0.6*depth: the far face is in view too (object BELOW
+            #       the camera, e.g. a box on the ground -- near face + top
+            #       face), so the full depth is present and the centre is the
+            #       midpoint of the x-extent. p5/p95 (not min/max) reject a few
+            #       stray pixels, and the two ends' noise biases cancel in the
+            #       average, so the midpoint is unbiased.
+            #     * otherwise only the NEAR face shows (object at/above camera
+            #       height -- EVERY mission_2 table pick and column place): its
+            #       points form a thin slab, and the centre is half a known
+            #       depth behind that face. Estimate the face with the MEDIAN,
+            #       which is unbiased under the symmetric range noise. Do NOT use
+            #       a low percentile here: a low percentile of noisy near-face
+            #       points sits ~2*sigma proud of the true face (~14 mm at 7 mm
+            #       noise), which pulled the grasp ~1.4 cm toward the box's FRONT
+            #       EDGE -- invisible on a wide column, obvious on a 4.5 cm box.
+            #   y: midpoint of the y extent. A box/column silhouette is symmetric
+            #      about its centre from any view angle, so the extent midpoint
+            #      (noise-cancelling, unlike the density-weighted mean) is the
+            #      centre; p2/p98 reject stray edge pixels.
+            p5 = float(np.percentile(bxs, 5))
+            p95 = float(np.percentile(bxs, 95))
+            if (p95 - p5) >= 0.6 * depth:
+                bx = 0.5 * (p5 + p95)
+            else:
+                bx = float(np.median(bxs)) + depth / 2.0
+            by = 0.5 * (float(np.percentile(bys, 2)) + float(np.percentile(bys, 98)))
+        bz = float(bzs.mean())
 
         if abs(bz - EXPECTED_BOX_Z) > 0.02:
             log.warn(f'[detect] detected z={bz:.3f} differs from expected ground '
                       f'box z={EXPECTED_BOX_Z:.3f} by more than 2cm')
 
-        log.info(f'[detect] box in base_link: ({bx:.3f}, {by:.3f}, {bz:.3f})')
+        log.info(f'[detect] {n_valid} px -> box in base_link: '
+                 f'({bx:.3f}, {by:.3f}, {bz:.3f})')
         return (bx, by, bz)
 
     # --- sequence ------------------------------------------------------------
@@ -571,7 +656,7 @@ class PickAndPlace(Node):
         self.arm.remove_collision_object(BOX_ID)
         return False
 
-    def grab_below(self, grasp_z=GRASP_Z, color='blue', x_offset=FRONT_X_OFFSET):
+    def grab_below(self, grasp_z=GRASP_Z, color='blue'):
         """Claw grab: the `color` box has been driven directly UNDER the
         gripper-down ready pose. Take a fresh front-camera read of it, descend
         straight onto that spot (to grasp_z -- raise it for a box on a table),
@@ -583,17 +668,25 @@ class PickAndPlace(Node):
         log.info('=== CLAW GRAB: descend straight down ===')
         self.gripper(GRIP_OPEN, 'open')
         # Fresh read of the box now under the gripper, then descend onto it.
-        # x_offset corrects the front camera's forward bias; the default is the
-        # value measured for a box on the GROUND. That bias does not hold for a
-        # box raised on a table, and the box is only 4.5 cm wide, so applying it
-        # there puts the jaws on the box's far edge and shoves it away instead of
-        # grasping -- table picks pass a smaller offset.
-        det = self.detect_box_front(timeout_sec=1.5, color=color)
+        # depth=BOX_SIZE makes the reading the box's CENTRE rather than the
+        # centre of the face pointing at the camera: each finger pad is only
+        # 1.5 cm deep in x against a 4.5 cm box, so aiming at the visible face
+        # (2.25 cm short) puts the pads on the box's near EDGE -- it gets nudged
+        # or tipped instead of pinched in the middle.
+        det = self.detect_box_front(timeout_sec=1.5, color=color, depth=BOX_SIZE)
         if det is None:
             log.warn('[claw] box not seen for grab')
             return False
-        bx = min(GRIPPER_X + 0.03, det[0] + x_offset)
-        by = det[1]
+        bx = min(GRIPPER_X + 0.03, det[0])   # cap at the arm's comfortable reach
+        # Descend on the fixed gripper CENTRELINE (y = GRIPPER_Y = 0), NOT the
+        # measured box y. Reaching a sideways y would force the shoulder-yaw
+        # joint j1 to rotate -- exactly the arm rotation we must avoid. The base
+        # has already centred the box in y (claw_approach, |by| <= CLAW_Y_TOL),
+        # and the jaws close from a 0.10 m gap onto a 0.045 m box that is wider
+        # than their 0.04 m closed gap, so they physically re-centre it as they
+        # shut. So keeping y at 0 both leaves the box centred in the jaws AND
+        # keeps the whole descent in the arm's vertical plane (no yaw, no roll).
+        by = GRIPPER_Y
         self.move_pose(bx, by, grasp_z, 0.0, cartesian=True,
                        label='claw descend', quat_xyzw=zdown_quat(0.0))
         self.gripper(GRIP_CLOSED, 'grasp')
