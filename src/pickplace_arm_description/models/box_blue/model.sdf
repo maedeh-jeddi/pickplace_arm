@@ -9,7 +9,7 @@
       <collision name="collision">
         <geometry><box><size>0.045 0.045 0.045</size></box></geometry>
         <surface>
-          <friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction>
+          <friction><ode><mu>4.0</mu><mu2>4.0</mu2></ode></friction>
           <contact><ode><kp>1e6</kp><kd>1.0</kd></ode></contact>
         </surface>
       </collision>
