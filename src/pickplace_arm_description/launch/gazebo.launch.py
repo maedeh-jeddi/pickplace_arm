@@ -149,6 +149,17 @@ def generate_launch_description():
             '/front_camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
             '/front_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/front_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            # Rigid-grasp control (ROS -> gz, hence ']'): one attach/detach pair
+            # per box, driven by the DetachableJoint plugins on the robot (see
+            # pickplace_arm.gazebo.xacro). The gripper welds the box on a
+            # VERIFIED grasp and releases it on open; friction alone let the box
+            # slip out mid-carry on every Tugbot-warehouse run.
+            '/box_red/attach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/box_red/detach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/box_green/attach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/box_green/detach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/box_blue/attach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/box_blue/detach@std_msgs/msg/Empty]gz.msgs.Empty',
         ],
         output='screen',
     )

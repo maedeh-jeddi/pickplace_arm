@@ -90,6 +90,54 @@
     </plugin>
   </gazebo>
 
+  <!-- Rigid grasp: weld the box to the gripper instead of relying on friction.
+       Friction alone was never reliable. The box slipped out mid-carry on
+       EVERY run of the Tugbot-warehouse mission (and intermittently before
+       that, which is what the raised mu values below were chasing). A
+       DetachableJoint per box gives a hard constraint that cannot slip
+       regardless of physics load, carry speed or how off-centre the grip is.
+
+       The gripper still physically closes on the box and the grasp is still
+       VERIFIED by the finger gap before anything attaches (see grab_below),
+       so this makes a confirmed grasp hold; it does not fake one.
+
+       parent_link is link6, NOT gripper_base, even though gripper_base is the
+       link every grasp pose is expressed in. Gazebo's URDF importer MERGES
+       links joined by fixed joints into their parent, so gripper_base does not
+       survive into the spawned SDF at all and naming it here fails the plugin
+       outright ("Link with name [gripper_base] not found in model
+       [pickplace_arm]. Failed to initialize."), silently leaving the box on
+       friction. link6 is what gripper_base was merged INTO, so it is the same
+       rigid body. Only links with a non-fixed joint (or a sensor) survive: to
+       check, run `gz model -m pickplace_arm` against a live sim and read the
+       link list. Verified empirically: attach/detach both work on link6.
+
+       Each box IS welded the moment it spawns, with no attach requested:
+       the plugin creates its joint as soon as the child model appears.
+       Verified by driving the base right after launch with nothing published,
+       and watching every box track the robot exactly (0.301 m for 0.301 m).
+       That makes the startup detach in PickAndPlace.__init__ load-bearing,
+       NOT a nicety: without it the robot tows all three boxes off the table
+       the moment it drives to the pick. Nothing moves between the box spawn
+       and the mission node starting, so issuing it there is soon enough. -->
+  <xacro:macro name="box_attach" params="color">
+    <gazebo>
+      <plugin filename="gz-sim-detachable-joint-system"
+              name="gz::sim::systems::DetachableJoint">
+        <parent_link>link6</parent_link>
+        <child_model>box_${color}</child_model>
+        <child_link>link</child_link>
+        <attach_topic>/box_${color}/attach</attach_topic>
+        <detach_topic>/box_${color}/detach</detach_topic>
+        <output_topic>/box_${color}/attach_state</output_topic>
+        <suppress_child_warning>true</suppress_child_warning>
+      </plugin>
+    </gazebo>
+  </xacro:macro>
+  <xacro:box_attach color="red"/>
+  <xacro:box_attach color="green"/>
+  <xacro:box_attach color="blue"/>
+
   <!-- High friction + soft contact on the finger pads so the gripper can
        actually hold a box by friction in Gazebo Harmonic. Raised 3.5 -> 5.0
        (and the box models' own mu 2.0 -> 4.0) after the box intermittently

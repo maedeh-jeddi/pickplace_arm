@@ -33,7 +33,9 @@ setup(
             'mission = pickplace_arm_bringup.mission:main',
             'mission_2 = pickplace_arm_bringup.mission_2:main',
             'mission_2_ionic = pickplace_arm_bringup.mission_2:main_ionic',
+            'mission_2_tugbot = pickplace_arm_bringup.mission_2:main_tugbot',
             'teleop_key = pickplace_arm_bringup.teleop_key:main',
+            'tugbot_demo = pickplace_arm_bringup.tugbot_demo:main',
         ],
     },
 )

@@ -35,6 +35,7 @@ from sensor_msgs_py import point_cloud2
 from geometry_msgs.msg import PointStamped
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
+from std_msgs.msg import Empty
 
 import tf2_ros
 import tf2_geometry_msgs  # noqa: F401  (registers PointStamped transform support)
@@ -65,6 +66,9 @@ GRASP_Z = 0.03          # gripper_base z when grasping a ground box
 APPROACH_Z = 0.15       # pre-grasp / lift height
 GRIP_OPEN = 0.03
 GRIP_CLOSED = 0.0
+# Box models that can be rigidly grasped (one DetachableJoint per colour on the
+# robot; the model names are box_red/box_green/box_blue in every world).
+BOX_COLORS = ('red', 'green', 'blue')
 
 # --- grasp verification -------------------------------------------------------
 # After the jaws close, a finger joint held OPEN by the box reads clearly above
@@ -232,7 +236,64 @@ class PickAndPlace(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        # Rigid grasp (see the DetachableJoint plugins in
+        # pickplace_arm.gazebo.xacro): welding the box to the gripper on a
+        # verified grasp, because a friction hold slipped mid-carry on every
+        # Tugbot-warehouse run. These publish through the ros_gz bridge.
+        self._attach_pubs, self._detach_pubs = {}, {}
+        for c in BOX_COLORS:
+            self._attach_pubs[c] = self.create_publisher(Empty, f'/box_{c}/attach', 10)
+            self._detach_pubs[c] = self.create_publisher(Empty, f'/box_{c}/detach', 10)
+        self._attached_color = None
+        # The plugins weld each box the moment it spawns -- metres away, with
+        # the robot about to drive off and drag it. Break those welds before
+        # anything moves. Safe when nothing is attached (the plugin just
+        # reports it is not attached).
+        self.detach_box(log_label='startup')
+
         self.get_logger().info('Pick-and-place node ready')
+
+    # --- rigid grasp ---------------------------------------------------------
+    def _publish_box_cmd(self, pub, wait_for_bridge=True):
+        """Publish an Empty to a gz DetachableJoint topic. Waits for the bridge
+        to subscribe first: these are one-shot commands with no retry loop and
+        no acknowledgement, so a message sent before discovery completes is
+        simply lost -- and a lost attach means the box rides on friction alone
+        again, which is the exact failure this replaces."""
+        deadline = time.time() + 5.0
+        while wait_for_bridge and pub.get_subscription_count() == 0 and time.time() < deadline:
+            time.sleep(0.1)
+        for _ in range(3):
+            pub.publish(Empty())
+            time.sleep(0.05)
+
+    def attach_box(self, color):
+        """Weld the `color` box to the gripper. Call ONLY after the finger-gap
+        check confirms the box is really between the jaws -- the joint is
+        created at the current relative pose, so attaching without a real grasp
+        would pin the box wherever it happens to be."""
+        if color not in self._attach_pubs:
+            self.get_logger().warn(f'[attach] no attach topic for colour {color}')
+            return
+        self._publish_box_cmd(self._attach_pubs[color])
+        self._attached_color = color
+        self.get_logger().info(f'[attach] {color} box welded to the gripper')
+
+    def detach_box(self, color=None, log_label=''):
+        """Release the weld. With no colour, releases every box (used at startup
+        and on any gripper open, where the safe move is to make sure nothing is
+        left attached)."""
+        colors = [color] if color else list(self._detach_pubs)
+        for c in colors:
+            # Wait per colour, not just for the first: each publisher matches
+            # the bridge independently, and a detach dropped for one box leaves
+            # THAT box welded to the gripper from spawn -- the robot then tows
+            # it off the table on the way to the pick.
+            self._publish_box_cmd(self._detach_pubs[c])
+        if self._attached_color or log_label:
+            self.get_logger().info(
+                f'[attach] released {color or "all boxes"} {log_label}'.strip())
+        self._attached_color = None
 
     def _cloud_cb(self, msg):
         with self._cloud_lock:
@@ -251,6 +312,16 @@ class PickAndPlace(Node):
         held open by the box reads well above an empty (closed-on-air) grasp;
         use the wider-open of the two fingers so an off-centre box (which stops
         only one finger) still counts as held."""
+        # A welded box is held by a joint, not by the fingers, and the finger
+        # gap stops meaning anything the moment the weld exists: attaching puts
+        # the box in the robot's own articulation, which disables box/finger
+        # collision, so the jaws close straight THROUGH the box and the gap
+        # reads empty. Observed live -- the first welded run reported "box
+        # slipped during lift/carry" seconds after a confirmed grasp, with the
+        # box rigidly attached the whole time. The weld is the stronger
+        # guarantee anyway: it cannot slip.
+        if self._attached_color:
+            return True
         if not self._joint_pos:
             return False
         gap = max(self._joint_pos.get(j, 0.0) for j in GRIPPER_JOINTS)
@@ -350,6 +421,7 @@ class PickAndPlace(Node):
 
     def gripper(self, pos, label=''):
         self.get_logger().info(f'[gripper] -> {pos} {label}')
+        release = pos > GRIP_CLOSED and self._attached_color
         m = JointTrajectory()
         m.joint_names = GRIPPER_JOINTS
         pt = JointTrajectoryPoint()
@@ -360,6 +432,18 @@ class PickAndPlace(Node):
             self.gripper_pub.publish(m)
             time.sleep(0.4)
         time.sleep(1.0)
+        # Release the weld AFTER the jaws have finished opening, never before.
+        # Opening is the one and only release point, so hooking it here covers
+        # every call site (place, release-after-failed-carry, the open before a
+        # fresh grab) instead of relying on each to remember. Order matters: a
+        # welded box shares the robot's articulation, so box/finger collision is
+        # off and the closed jaws sit INSIDE the box. Detaching first would hand
+        # the physics engine two interpenetrating bodies and let it fire the box
+        # out sideways; opening first clears the fingers (0.03 > the box's
+        # 0.0225 half-width) so the box simply drops the last millimetre onto
+        # the column when the weld goes.
+        if release:
+            self.detach_box(log_label=f'on gripper open ({label})')
 
     def add_box(self, xy, z_center=None):
         if z_center is None:
@@ -628,6 +712,11 @@ class PickAndPlace(Node):
                            label='claw lift-empty', quat_xyzw=zdown_quat(0.0))
             return False
         log.info('[claw] box held between the jaws')
+        # The grasp is verified, so make it rigid before any lifting or driving
+        # happens -- everything below this point (lift, carry pose, then a
+        # multi-metre Nav2 drive to the column) is where the friction hold used
+        # to lose the box.
+        self.attach_box(color)
 
         # attach so MoveIt carries it + RViz shows it, lift straight up, carry
         self.add_box((bx, by), z_center=grasp_z - 0.0575)
@@ -656,6 +745,9 @@ class PickAndPlace(Node):
             log.warn('[claw] box slipped during lift/carry')
             self.arm.detach_collision_object(BOX_ID)
             self.arm.remove_collision_object(BOX_ID)
+            # Fingers report empty, so whatever is still welded is not really
+            # grasped -- drop the weld too rather than carting an invisible box.
+            self.detach_box(log_label='after slip during lift/carry')
             return False
         log.info('=== CLAW GRAB: DONE (box held) ===')
         return True

@@ -386,6 +386,17 @@ class Mission(NavAndPick):
                 return True
             log.warn('[claw] grab missed -- re-centring and retrying')
             self.move_config(HOME_CONFIG, 'gripper-down ready')
+            # claw_approach stops the base at CLAW_STOP_X -- right at the
+            # front camera's close-range limit (its near clip is 0.05 m, and
+            # a box that close sits at a steep downward angle near the edge
+            # of the FOV). A miss leaves the base sitting there; the retry's
+            # fresh claw_approach then has a good chance of never
+            # re-acquiring the box at all ('lost the box', 0 detections) and
+            # returning False immediately -- burning the whole attempt
+            # without ever reaching grab_below again. Back off first so the
+            # retry starts from the same comfortable detection range the
+            # first attempt did.
+            self._drive_blind(-0.15, 2.0)
         return False
 
     def run_mission(self):

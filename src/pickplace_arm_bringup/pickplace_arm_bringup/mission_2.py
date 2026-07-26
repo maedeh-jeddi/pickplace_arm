@@ -29,14 +29,16 @@ import time
 import threading
 
 import rclpy
+import tf2_ros
 from geometry_msgs.msg import Twist
+from rclpy.duration import Duration as RclDuration
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 
 from pickplace_arm_bringup.mission import Mission
 from pickplace_arm_bringup.pick_and_place import (
     HOME_CONFIG, GRIPPER_X, GRIP_OPEN, BOX_ID, BOX_SIZE, GRASP_LINK,
-    FINGER_LINKS, zdown_quat)
+    FINGER_LINKS, EXPECTED_BOX_Z, zdown_quat)
 from pickplace_arm_bringup.search_and_pick import (
     APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX)
@@ -141,6 +143,26 @@ class Mission2(Mission):
     TALL_COLUMN_H = 99.0
     COLUMN_STOP_X_TALL = GRIPPER_X - 0.02
     OVER_Z_CEILING_TALL = 0.21
+    # Forward correction added to the column's detected x before lowering
+    # (see place_on_column) -- a subclass overrides this if that world's
+    # camera/column rendering carries a different systematic bias than the
+    # warehouse's measured ~0.038.
+    COLUMN_X_OFFSET = COLUMN_X_OFFSET
+    # How badly this world's front camera UNDER-reads the distance to a column
+    # (m). 0 in the warehouse (the small COLUMN_X_OFFSET covers it), but in a
+    # world where it is large the column is physically out of arm reach at the
+    # point the servo declares "centred", and no offset can fix that -- the
+    # min() reach cap in place_on_column just clamps the target short and the
+    # box is released into thin air. When non-zero, place_on_column closes the
+    # gap by creeping the BASE forward (see _creep_forward) instead, because
+    # the front camera cannot see the column at that range at all (its near
+    # clip is 0.05 m and it sits ~0.205 m ahead of base_link, so anything
+    # nearer than base x~0.26 falls behind the near plane).
+    COLUMN_DEPTH_BIAS = 0.0
+    # Where the column should sit (base_link x, m) when the arm actually places,
+    # once the creep above has closed the gap. 0.30-0.34 is the range the IK is
+    # comfortable over from the carry seed (see the OVER_Z notes below).
+    COLUMN_PLACE_X = 0.32
 
     def __init__(self):
         super().__init__()
@@ -182,6 +204,74 @@ class Mission2(Mission):
         if height is not None and height >= self.TALL_COLUMN_H:
             return self.COLUMN_STOP_X_TALL
         return self.COLUMN_STOP_X
+
+    def _base_in_odom(self, timeout_sec=0.05):
+        """Base position in the ODOM frame. Used only for short relative moves:
+        odom is smooth and jump-free (unlike map, which AMCL can snap), which is
+        exactly what measuring a ~0.2 m creep needs.
+
+        The timeout is deliberately tiny: this gets polled from inside a
+        cmd_vel publish loop, and a long blocking lookup there starves the
+        publishing (see _creep_forward). Callers must tolerate None."""
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                'odom', 'base_link', rclpy.time.Time(),
+                timeout=RclDuration(seconds=timeout_sec))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            self.get_logger().error(f'[creep] odom<-base_link TF failed: {e}')
+            return None
+        t = tf.transform.translation
+        return t.x, t.y
+
+    def _creep_forward(self, dist, speed=0.12, timeout_sec=25.0):
+        """Drive the base straight forward by `dist` metres, measured with odom
+        TF rather than velocity x time. _drive_blind is open-loop (a commanded
+        speed a skid-steer base does not actually hold), which is fine for
+        "back off far enough to plan" but not for closing a placement gap where
+        being 5 cm out drops the box on the floor. Returns True if it covered
+        at least 90% of the requested distance.
+
+        cmd_vel must be republished densely: diff_drive_controller stops the
+        base if commands stop arriving, so the publish rate -- NOT the odom
+        poll rate -- sets whether the robot moves at all. A first version polled
+        odom (1 s TF timeout) once per iteration and so managed barely one Twist
+        per second; the controller timed out between every pulse and the base
+        travelled a measured 0.000 m. Hence: publish every 50 ms unconditionally,
+        sample odom only every few cycles with a tiny TF timeout.
+
+        `speed` stays at/above search_and_pick's APPROACH_LINEAR_MIN (0.08), the
+        documented floor below which this skid-steer base doesn't reliably
+        break static friction."""
+        log = self.get_logger()
+        if dist <= 0.0:
+            return True
+        start = self._base_in_odom(timeout_sec=1.0)
+        if start is None:
+            log.warn('[creep] no odom pose -- skipping creep')
+            return False
+        twist = Twist()
+        twist.linear.x = speed
+        deadline = time.time() + timeout_sec
+        moved, i = 0.0, 0
+        while time.time() < deadline:
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+            i += 1
+            if i % 4:                     # poll odom ~5 Hz, publish at 20 Hz
+                continue
+            now = self._base_in_odom()
+            if now is not None:
+                moved = math.hypot(now[0] - start[0], now[1] - start[1])
+                if moved >= dist:
+                    break
+        self._stop_base()
+        time.sleep(0.4)          # let the skid-steer base settle before the arm moves
+        final = self._base_in_odom(timeout_sec=1.0)
+        if final is not None:
+            moved = math.hypot(final[0] - start[0], final[1] - start[1])
+        log.info(f'[creep] moved {moved:.3f} m of {dist:.3f} m requested')
+        return moved >= dist * 0.9
 
     def approach_column(self, col_xy, color, timeout_sec=60.0, height=None):
         """Front-camera visual servo that drives the BASE until the `color`
@@ -254,8 +344,29 @@ class Mission2(Mission):
         if det is None:
             log.warn(f'[place] lost sight of column {tag_id} after settling')
             return False
-        px = min(GRIPPER_X + 0.03, det[0] + COLUMN_X_OFFSET)
-        py = det[1]
+        if self.COLUMN_DEPTH_BIAS > 0.0:
+            # This world's front camera under-reads the column distance badly
+            # enough that the column is OUT OF ARM REACH at the point the servo
+            # calls it centred -- measured live: reading 0.35 m when the column
+            # was really ~0.57 m away, against a GRIPPER_X+0.03 = 0.41 m cap.
+            # The old code just clamped px to that cap and released, dropping
+            # every box on the floor short of its column while still logging
+            # "PLACE: DONE". The camera cannot guide the rest of the way (the
+            # column is inside its near field, see COLUMN_DEPTH_BIAS), so close
+            # the gap open-loop on odom and place at a fixed comfortable reach.
+            true_x = det[0] + self.COLUMN_DEPTH_BIAS
+            creep = true_x - self.COLUMN_PLACE_X
+            log.info(f'[place] column read {det[0]:.2f} m -> true ~{true_x:.2f} m; '
+                     f'creeping {creep:.2f} m to place at {self.COLUMN_PLACE_X:.2f}')
+            if not self._creep_forward(creep):
+                log.warn(f'[place] creep to column {tag_id} fell short -- aborting '
+                         f'placement (box still held)')
+                return False
+            px = self.COLUMN_PLACE_X
+            py = det[1]
+        else:
+            px = min(GRIPPER_X + 0.03, det[0] + self.COLUMN_X_OFFSET)
+            py = det[1]
         top_z = height + 0.03            # gripper_base z: box bottom rests on top
         # The over-column waypoint must clear the column TOP: the held box hangs
         # ~0.08 m below gripper_base, so its bottom is (over_z - 0.08). To pass
@@ -305,7 +416,55 @@ class Mission2(Mission):
         log.info('[place] backing off the column')
         self._drive_blind(-0.22, 3.5)
         self._stop_base()
+        if not self._placement_landed(height, color, tag_id):
+            return False
         log.info(f'=== PLACE: DONE (column {tag_id}) ===')
+        return True
+
+    def _placement_landed(self, height, color, tag_id):
+        """Did the box actually end up ON the column, or on the floor next to
+        it? Everything above this point can succeed -- IK solved, cartesian
+        lower executed, gripper opened -- while the box drops into thin air
+        short of the column, because none of those steps observe the box after
+        release. That is not hypothetical: a full 3-box run logged "PLACE:
+        DONE" three times with all three boxes measured flat on the floor
+        (z=0.0225, i.e. half a 0.045 m cube) and every column untouched.
+
+        The check is the box's own height: detect_box_front already returns the
+        blob centroid in base_link, and a box resting on the floor sits at
+        EXPECTED_BOX_Z while one on the column top sits a full `height` higher.
+        Anything below the midpoint between the two is a failed placement.
+
+        The detection MUST be gated to just above the column top, because each
+        column is deliberately painted its box's colour -- so an ungated
+        'is there a red blob?' sees the pillar and the box as ONE blob, and the
+        pillar wins on area: its front face is 0.12x0.08 against the box's
+        0.045x0.045, ~5x larger. Measured live (run 1, bare pillar, no box):
+        centroid z=-0.005 from 11k-49k px. A placed box only drags that
+        area-weighted centroid to about +0.005 -- under this function's own
+        +0.0125 threshold -- so the ungated check would fail every SUCCESSFUL
+        placement. Gating from 5 mm above the column top (camera frame, so
+        height - 0.05 for base_link and another -0.01 for the camera mount)
+        leaves the pillar out of the blob entirely: a detection up there IS the
+        box on the column, and a box on the floor falls outside the gate and is
+        correctly reported as not placed."""
+        log = self.get_logger()
+        gate = (0.05, 1.5, -0.6, 0.6, height - 0.055, height + 0.05)
+        det = self.detect_box_front(timeout_sec=2.0, color=color, gate=gate)
+        if det is None:
+            log.error(f'[place] no {color} box above column {tag_id}\'s top '
+                      f'after release -- it is not on the column. FAILED.')
+            return False
+        bz = det[2]
+        floor_z = EXPECTED_BOX_Z
+        placed_z = EXPECTED_BOX_Z + height
+        if bz < (floor_z + placed_z) / 2.0:
+            log.error(f'[place] {color} box is at z={bz:.3f} -- that is floor '
+                      f'level (~{floor_z:.3f}), not column {tag_id} top '
+                      f'(~{placed_z:.3f}). Placement FAILED.')
+            return False
+        log.info(f'[place] verified: {color} box at z={bz:.3f} '
+                 f'(column top ~{placed_z:.3f})')
         return True
 
     # --- full mission -------------------------------------------------------
@@ -361,6 +520,18 @@ class Mission2(Mission):
             self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
             if not nav_ok:
                 log.error(f'Column {tag_id} navigation failed -- aborting.')
+                return
+            # The box can slip out of the jaws during the drive here (the known
+            # intermittent carry slip), and nothing downstream would notice:
+            # place_on_column servos onto the column, opens an empty gripper and
+            # reports success, and only _placement_landed catches it -- after a
+            # pointless full placement. Seen live in this world: box_red ended
+            # up on the floor mid-route at world (0.74,-0.24), tipped on its
+            # side, while the mission carried on to the column regardless.
+            # grasp_is_holding is just a finger-gap read, so this costs nothing.
+            if not self.grasp_is_holding():
+                log.error(f'{color} box was DROPPED during the carry to column '
+                          f'{tag_id} (gripper is empty on arrival) -- aborting.')
                 return
             if not self.place_on_column(tag_id, height, col_xy, color):
                 log.error(f'Failed to place on column {tag_id} -- aborting.')
@@ -421,6 +592,77 @@ class Mission2Ionic(Mission2):
     OVER_Z_CEILING_TALL = 0.23
 
 
+class Mission2Tugbot(Mission2):
+    """Downloaded OpenRobotics "Tugbot in Warehouse" Fuel world. Reuses the
+    plain warehouse layout unchanged (table/columns/final pose): this room's
+    open aisle happens to match those coordinates cleanly (verified clear on
+    the SLAM map built for it -- maps/tugbot_warehouse.yaml, robot spawn =
+    map origin, same convention as the other worlds).
+
+    Unlike the curated pickplace/warehouse worlds, this is a busy downloaded
+    scene full of same-coloured clutter (pallet labels, hazard tape, shelf
+    trim) that fools the plain HSV blob detector -- confirmed live: an
+    ungated 'red' search locked onto something 3+ m out and >1 m up instead
+    of the table box. Gate every colour detection (both the box pick and the
+    column placement) to dead-ahead/close/low, the same technique
+    Mission2Ionic uses for its navy-blue-walls problem."""
+    TUGBOT_GATE = (0.05, 2.0, -0.6, 0.6, -0.15, 0.3)
+    COLUMN_DETECT_GATE = TUGBOT_GATE
+    # Column 0 (short, 8cm) landed a measured 0.19 m short of the column
+    # (box at world x=-0.81 vs the column's -1.0) despite "PLACE: DONE" --
+    # this world's front-camera depth reading for the column is biased
+    # short relative to the warehouse's calibration. A first fix tried
+    # stopping the base closer (COLUMN_STOP_X=0.20) to compensate, but that
+    # put the column inside the front camera's near-field: live runs lost
+    # detection entirely around base x~0.26-0.28 (raw camera-frame x
+    # collapsing toward the 0.05 m sensor near-clip) and the approach timed
+    # out ("lost the column") before ever reaching the stop distance.
+    # TALL_COLUMN_H is never overridden here (stays the base class's 99.0,
+    # i.e. no column in this world takes the "tall" branch), so the reach
+    # headroom COLUMN_STOP_X was meant to buy in the tall-column case (see
+    # Mission2Ionic) doesn't actually apply -- there is no reach reason to
+    # stop this close. Left at the class default (GRIPPER_X - 0.02, same
+    # distance verified working in the plain warehouse world).
+    #
+    # The "short landing" fix also bumped COLUMN_X_OFFSET to 0.10 -- but at
+    # the (now restored) default stop distance that pushes px = bx + offset
+    # past place_on_column's GRIPPER_X+0.03 reach cap (0.41) on essentially
+    # every placement, and 0.41 turned out to be NO_IK_SOLUTION for this
+    # column's low over_z (0.19) from the carry-seeded strict IK branch --
+    # confirmed live ("[arm] IK seed failed for over-column", box still held,
+    # placement aborted). The 0.19 m short-landing measurement was taken
+    # under the broken close-stop config, not this one, so it doesn't carry
+    # over: left at the class default (0.038), same value verified to place
+    # within <5 mm in the plain warehouse world at this same stop distance.
+    #
+    # DO NOT set COLUMN_DEPTH_BIAS here. A previous session concluded this
+    # world's camera under-reads the column distance by 0.22 m, by comparing
+    # the released box's true Gazebo pose against the base's AMCL pose -- but
+    # AMCL was itself 2.6 m out at the time, so that "bias" was an artefact of
+    # mixing a broken frame with a true one. Measured directly instead, with
+    # the sim paused and ground truth read from `gz model -p`: base 0.550 m
+    # from the column CENTRE, 0.490 m from its near FACE, camera reads 0.493 m
+    # (three identical readings). The camera is accurate to 3 mm -- it simply
+    # reports the near face, i.e. it reads short by the column's half-width
+    # (0.06), exactly what the inherited COLUMN_X_OFFSET (0.038) already
+    # compensates for in the plain warehouse world.
+    #
+    # Setting the bias non-zero here is actively destructive, which is how the
+    # phantom was caught: with 0.22 the code turned a correct 0.334 m reading
+    # into a believed 0.554 m and creeped the base 0.23 m into a column that
+    # had only 0.14 m of clearance. The robot wedged against it (ground truth
+    # afterwards: base -0.750, column face -0.940, i.e. bumper flush, zero
+    # gap) and the wheels span in place for the creep's full 25 s timeout --
+    # 25.4 s x 0.12 m/s = 3.05 m of phantom wheel odometry, which is precisely
+    # the 3.0 m odom-vs-truth offset the run ended with, and precisely why
+    # AMCL then reported the robot 2.6 m from where it actually stood.
+
+    def detect_box_front(self, timeout_sec=2.0, debug_save=False, color='blue', gate=None):
+        if gate is None:
+            gate = self.TUGBOT_GATE
+        return super().detect_box_front(timeout_sec, debug_save, color, gate)
+
+
 def _run(node_cls):
     rclpy.init()
     node = node_cls()
@@ -458,6 +700,10 @@ def main():
 
 def main_ionic():
     _run(Mission2Ionic)
+
+
+def main_tugbot():
+    _run(Mission2Tugbot)
 
 
 if __name__ == '__main__':
