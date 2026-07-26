@@ -40,15 +40,19 @@ from pickplace_arm_bringup.pick_and_place import (
 # reliably across [0.45, 1.1]m; the steeper close-up SCAN_POSITION/SCAN_PITCH
 # that pick_and_place.run() uses for the final grasp scan covers [0.40,0.50]m,
 # so stopping the base with the box near ~0.45m keeps the handoff in range.
-SEARCH_POSITION = (0.30, 0.00, 0.42)
-# The wrist camera's mount now has ZERO tilt of its own (see camera_joint in
-# the URDF: it is rigidly aligned with gripper_base, so the camera looks
-# exactly wherever the arm is pointed). The pitch here is the WHOLE downward
-# look angle -- there is no mount contribution to add to it any more. Its
-# value reproduces the original (pre-mount-tuning) camera direction exactly
-# (mount 28.6deg + pitch 25deg = 53.6deg total, all from pitch now), so the
-# detection ranges tuned below are unchanged.
-SEARCH_PITCH = math.radians(53.6)
+SEARCH_POSITION = (0.45, 0.00, 0.30)
+# The wrist camera looks ALONG the Franka Hand's approach axis (+z of fr3_hand;
+# see camera_joint in the URDF), so it still sees exactly wherever the arm is
+# pointed and there is still no mount tilt to add. But the camera axis moved
+# 90 deg relative to the old gripper, where it looked along gripper_base's +x -
+# perpendicular to the approach. scan_quat/search pitches therefore shift by
+# exactly +90 deg to reproduce the same look direction: 53.6 -> 143.6 deg.
+# See the fuller explanation on SCAN_PITCH in pick_and_place.py.
+#
+# SEARCH_POSITION is NOT a carry-over and needs an IK sweep - it is a plausible
+# starting point for the FR3 on the Husky, not a verified one, and the
+# detection bands quoted above were measured with the old arm and camera.
+SEARCH_PITCH = math.radians(143.6)
 # Grasp-scan pose used by run() to re-detect the box right before grasping.
 # Steeper than the search pose so its detection band ([0.40,0.70]m) reaches
 # below the search pose's ~0.45m floor and comfortably covers the ~0.43m stop

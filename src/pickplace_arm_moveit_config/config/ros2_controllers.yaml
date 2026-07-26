@@ -11,12 +11,13 @@ controller_manager:
 arm_controller:
   ros__parameters:
     joints:
-      - joint1
-      - joint2
-      - joint3
-      - joint4
-      - joint5
-      - joint6
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
     command_interfaces:
       - position
     state_interfaces:
@@ -24,9 +25,11 @@ arm_controller:
       - velocity
 gripper_controller:
   ros__parameters:
+    # Only finger_joint1: fr3_finger_joint2 mimics it (see the <mimic> tag in
+    # franka_description's franka_hand.xacro, and the matching mimic params in
+    # pickplace_arm_description's pickplace_arm.gazebo.xacro).
     joints:
-      - left_finger_joint
-      - right_finger_joint
+      - fr3_finger_joint1
     command_interfaces:
       - position
     state_interfaces:

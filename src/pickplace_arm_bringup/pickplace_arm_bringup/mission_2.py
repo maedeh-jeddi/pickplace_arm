@@ -38,30 +38,60 @@ from rcl_interfaces.srv import SetParameters
 from pickplace_arm_bringup.mission import Mission
 from pickplace_arm_bringup.pick_and_place import (
     HOME_CONFIG, GRIPPER_X, GRIP_OPEN, BOX_ID, BOX_SIZE, GRASP_LINK,
-    FINGER_LINKS, EXPECTED_BOX_Z, zdown_quat)
+    FINGER_LINKS, EXPECTED_BOX_Z, GROUND_Z, FRONT_CAM_Z, MAX_REACH_X,
+    zdown_quat)
 from pickplace_arm_bringup.search_and_pick import (
     APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX)
 
 # --- layout (map frame) -------------------------------------------------------
-TABLE_APPROACH = (1.45, 0.0, 0.0)      # pose the robot drives to before picking
-TABLE_Z = 0.10                          # table-top height
-TABLE_GRASP_Z = 0.13                    # gripper_base z to grasp a box on the table
-# The front camera's ~2 cm "reads short" bias was calibrated for a box on the
-# GROUND and does not hold for one raised on the table: applying it there lands
-# the jaws on the far edge of the 4.5 cm box and shoves it off instead of
-# grasping (this is what kept knocking the green box away). Descend on the
-# measured position instead.
-TABLE_X_OFFSET = 0.0
+#
+# Heights here are in the base_link frame, whose origin MOVED when the base
+# became a Husky A200: the floor is now at GROUND_Z = -0.13228 instead of
+# -0.05. They are written as offsets from GROUND_Z so they stay pinned to real
+# heights above the floor rather than drifting with the chassis.
+#
+# On top of that, poses are now commanded for fr3_hand_tcp (the FINGERTIP
+# frame, between the jaws) where they used to be for gripper_base (the gripper
+# BODY, which sat ~0.08 m above the held box). So a grasp z is now roughly the
+# box CENTRE height, not the body height above it.
+# Nav2 parks the base with the box ~1.00 m ahead, and claw_approach then servos
+# the last 0.30 m in on the front camera. It must NOT drive closer than this:
+# the Husky's bumper is at base_link x=0.4937 and the table's near face is
+# 0.125 m in front of the box line, so at 1.00 m standoff there is 0.38 m of
+# clearance, while the old 1.45 m (0.85 m standoff) was tuned for a 0.38 m-long
+# chassis and is far too tight for this one.
+TABLE_APPROACH = (1.30, 0.0, 0.0)      # pose the robot drives to before picking
+TABLE_TOP_ABOVE_GROUND = 0.30           # table-top height above the floor
+TABLE_Z = GROUND_Z + TABLE_TOP_ABOVE_GROUND          # table-top, base_link frame
+# Fingertip z to grasp a box standing on the table: the box centre.
+TABLE_GRASP_Z = TABLE_Z + BOX_SIZE / 2.0
+# Forward correction applied to the front camera's reading before descending.
+#
+# MEASURED, not assumed: with the sim paused at the actual grasp stop, the
+# camera's detection was compared against ground truth (`gz model -p` for both
+# the robot and the box, box centre rotated into base_link). Across all three
+# boxes the camera reads SHORT by:
+#     red +0.0286   green +0.0300   blue +0.0284      (lateral error <= 3.6 mm)
+# i.e. essentially exactly half a box - the camera sees the near FACE and the
+# jaws have to go to the CENTRE. So this is BOX_SIZE/2, the same correction the
+# ground pick uses, and it is no longer a special case.
+#
+# It was 0.0 before for a real reason that no longer applies: on the old robot
+# the ground-calibrated bias (0.02) OVERSHOT a table box's 0.045 m width and
+# shoved it off the table. With a 0.06 box, a 0.076 m jaw opening and a
+# correctly measured bias, descending on the centre is both correct and has
+# ~8 mm of slack either side.
+TABLE_X_OFFSET = 0.030
 BOXES = [                               # (colour, box map position) in pick order
-    ('red',   (2.30, -0.16)),
+    ('red',   (2.30, -0.22)),
     ('green', (2.30,  0.00)),
-    ('blue',  (2.30,  0.16)),
+    ('blue',  (2.30,  0.22)),
 ]
 COLUMNS = [                             # (column id, height, column map x,y)
-    (0, 0.08, (-1.0, -0.30)),  # red   -> column 1,  8 cm
-    (1, 0.12, (-1.0,  0.00)),  # green -> column 2, 12 cm
-    (2, 0.16, (-1.0,  0.30)),  # blue  -> column 3, 16 cm
+    (0, 0.30, (-1.0, -0.45)),  # red   -> column 1, 30 cm
+    (1, 0.40, (-1.0,  0.00)),  # green -> column 2, 40 cm
+    (2, 0.50, (-1.0,  0.45)),  # blue  -> column 3, 50 cm
 ]
 FINAL_POSE = (0.0, -1.8, 0.0)
 
@@ -79,18 +109,29 @@ FINAL_POSE = (0.0, -1.8, 0.0)
 # recover it -- confirmed live (column 1 arrival >57 deg off, zero pixels
 # detected, approach aborted). Same reason the old AprilTag design tightened
 # Nav2's arrival heading for this goal; still needed here for the same reason.
-NAV_STANDOFF = 0.42     # Nav2 stops this far in front of the column
+# Nav2 stops with the column CENTRE this far ahead of base_link.
+#
+# 1.10, up from 0.42. The old value is an outright collision on this robot: the
+# Husky's front bumper is at base_link x=0.4937 and the column is 0.20 deep, so
+# its near face would be at 0.42-0.10 = 0.32 - i.e. Nav2 would be asked to park
+# with the bumper 0.17 m INSIDE the column. 1.10 leaves 0.51 m of bumper
+# clearance, keeps the whole column inside the front camera's cone at arrival
+# (near face 0.49 m ahead of the lens, vertical span 0.0-0.70 m off the floor),
+# and leaves approach_column a 0.35 m visual servo in to the placement stop.
+NAV_STANDOFF = 1.10
 # Stop the approach when the column's front-camera reading reaches this x
-# (mirrors CLAW_STOP_X for the box pick). The column is a 0.12 m cube, so the
-# front camera -- which only sees its near face -- reads its centre as
-# COLUMN_X_OFFSET further away than that face. Initial guess (0.06, half the
-# column depth) measured a consistent ~2.2 cm overshoot across all 3 columns
-# (compared the placed box's actual Gazebo pose to the column's known map
-# x,y): red -0.022, green -0.023, blue -0.020 -- essentially identical, so a
-# systematic bias, not noise. Reduced by that average (~0.022) to correct it.
-COLUMN_STOP_X = GRIPPER_X - 0.02
-COLUMN_Y_TOL = 0.02
-COLUMN_X_OFFSET = 0.038
+# (mirrors CLAW_STOP_X for the box pick). The camera only sees the column's
+# NEAR FACE, and the columns are now 0.20 deep, so the centre is half that
+# (COLUMN_X_OFFSET) further away than the reading.
+#
+# Stopping with the near face at 0.65 puts the column CENTRE at 0.75 - past the
+# bumper (0.4937) with 0.06 m to spare on the near face, comfortably reachable
+# (0.67-0.69 m from the arm base for every column height, ~80% of reach), and
+# still 0.14 m ahead of the camera lens so the column stays in view at the stop
+# rather than falling inside the 0.05 m near clip.
+COLUMN_STOP_X = 0.65
+COLUMN_Y_TOL = 0.025
+COLUMN_X_OFFSET = 0.10
 
 # nav2_params.yaml deliberately loosens yaw_goal_tolerance to 0.5 rad (~29deg)
 # to stop the skid-steer oscillating (and tripping its own Spin recovery) at a
@@ -134,15 +175,24 @@ class Mission2(Mission):
     # tuned for the warehouse; see place_on_column for how they interact with
     # arm reach. A subclass placing on TALL columns stops closer (smaller
     # placement x) so the arm can reach a higher over_z and clear the top.
-    COLUMN_STOP_X = GRIPPER_X - 0.02
-    OVER_Z_CEILING = 0.21
-    # Columns at/above TALL_COLUMN_H are approached CLOSER (and may use a
-    # higher clearance ceiling), because placing high needs reach the arm only
-    # has when it is not extended far out. Defaults keep the warehouse's single
-    # behaviour (threshold above every column height = never triggers).
+    COLUMN_STOP_X = COLUMN_STOP_X
+    # Cap on the over-column clearance height. On the old 6-DOF arm this was a
+    # hard REACH limit (~0.21) and the single tightest constraint in the whole
+    # placement - it is why COLUMN_STOP_X_TALL / TALL_COLUMN_H exist at all.
+    # The FR3 has no such cliff here: a /compute_ik sweep over every column
+    # height (0.30/0.40/0.50) at placement x 0.68-0.80 solved BOTH the lower
+    # and the over-column waypoint at every single combination, collision-aware.
+    # So this is now just a sanity ceiling well above the tallest column's
+    # clearance (0.50 + 0.03 + 0.03 + 0.05 = 0.61 above the floor), not a
+    # binding constraint.
+    OVER_Z_CEILING = GROUND_Z + 0.80
+    # Columns at/above TALL_COLUMN_H are approached CLOSER. Left disabled
+    # (threshold above every column height): it existed purely to buy reach
+    # headroom the FR3 does not need, and the sweep above confirms the tallest
+    # column places fine at the same stop distance as the shortest.
     TALL_COLUMN_H = 99.0
-    COLUMN_STOP_X_TALL = GRIPPER_X - 0.02
-    OVER_Z_CEILING_TALL = 0.21
+    COLUMN_STOP_X_TALL = COLUMN_STOP_X
+    OVER_Z_CEILING_TALL = GROUND_Z + 0.80
     # Forward correction added to the column's detected x before lowering
     # (see place_on_column) -- a subclass overrides this if that world's
     # camera/column rendering carries a different systematic bias than the
@@ -160,9 +210,10 @@ class Mission2(Mission):
     # nearer than base x~0.26 falls behind the near plane).
     COLUMN_DEPTH_BIAS = 0.0
     # Where the column should sit (base_link x, m) when the arm actually places,
-    # once the creep above has closed the gap. 0.30-0.34 is the range the IK is
-    # comfortable over from the carry seed (see the OVER_Z notes below).
-    COLUMN_PLACE_X = 0.32
+    # once the creep above has closed the gap. Matches COLUMN_STOP_X +
+    # COLUMN_X_OFFSET, i.e. the column centre at the normal stop; verified
+    # reachable for all three column heights.
+    COLUMN_PLACE_X = COLUMN_STOP_X + COLUMN_X_OFFSET
 
     def __init__(self):
         super().__init__()
@@ -301,8 +352,16 @@ class Mission2(Mission):
                     log.info(f'[place] column centred (front {bx:.2f},{by:+.2f})')
                     return True
                 fwd = max(0.0, bx - stop_x)
-                twist.linear.x = min(APPROACH_LINEAR_MAX,
-                                     max(APPROACH_LINEAR_MIN, APPROACH_LINEAR_GAIN * fwd))
+                # Gate the minimum-speed floor on there being forward distance
+                # left to close -- same fix as claw_approach, same failure mode
+                # otherwise: once the column is at/inside stop_x but not yet
+                # centred laterally, an ungated floor keeps the base crawling
+                # into a solid column at 0.08 m/s until the timeout. Turning in
+                # place converges on `by` without needing the room.
+                twist.linear.x = (min(APPROACH_LINEAR_MAX,
+                                      max(APPROACH_LINEAR_MIN,
+                                          APPROACH_LINEAR_GAIN * fwd))
+                                  if fwd > 0.0 else 0.0)
                 twist.angular.z = max(-APPROACH_ANGULAR_MAX,
                                       min(APPROACH_ANGULAR_MAX,
                                           APPROACH_ANGULAR_GAIN * math.atan2(by, bx)))
@@ -365,24 +424,27 @@ class Mission2(Mission):
             px = self.COLUMN_PLACE_X
             py = det[1]
         else:
-            px = min(GRIPPER_X + 0.03, det[0] + self.COLUMN_X_OFFSET)
+            px = min(MAX_REACH_X, det[0] + self.COLUMN_X_OFFSET)
             py = det[1]
-        top_z = height + 0.03            # gripper_base z: box bottom rests on top
-        # The over-column waypoint must clear the column TOP: the held box hangs
-        # ~0.08 m below gripper_base, so its bottom is (over_z - 0.08). To pass
-        # OVER the column during the horizontal approach that must exceed the
-        # column height, i.e. over_z >= height + 0.08 (+ margin). But over_z is
-        # also bounded by IK reach: from the CARRY branch the same-branch
-        # z-ceiling depends on the reach x -- ~0.22 m at x~0.41, rising to ~0.27
-        # at x<=0.34 (verified by /compute_ik sweep). The tallest column (0.16)
-        # needs over_z ~0.24-0.27, unreachable at the default ~0.39 placement x
-        # -- which is exactly why the box caught the column's near-top edge and
-        # tipped onto the floor there. The fix pairs a CLOSER column stop (see
-        # COLUMN_STOP_X: smaller placement x -> higher reachable z) with a
-        # raised OVER_Z_CEILING; the min() still guards reach.
+        # Fingertip z so the held box's bottom rests on the column top. `height`
+        # is measured from the floor, so it has to be lifted into the base_link
+        # frame; the box centre then sits half a box above the column top, and
+        # the fingertip frame is at the box centre.
+        top_z = GROUND_Z + height + BOX_SIZE / 2.0
+        # The over-column waypoint must clear the column TOP. The held box now
+        # hangs ~BOX_SIZE/2 below the fingertip frame, NOT the ~0.08 m it hung
+        # below gripper_base, so the clearance term below shrank accordingly.
+        #
+        # over_z is also bounded by IK reach, and THAT bound is stale: the
+        # ceilings below (~0.22 m at x~0.41 rising to ~0.27 at x<=0.34) came
+        # from a /compute_ik sweep of the 6-DOF placeholder arm. The FR3 is a
+        # different arm, mounted 0.38 m up, with a redundant 7th joint that
+        # changes branch behaviour entirely. Re-run that sweep: the whole
+        # COLUMN_STOP_X / OVER_Z_CEILING pairing below exists only to work
+        # around the OLD arm's reach envelope.
         ceiling = (self.OVER_Z_CEILING_TALL if height >= self.TALL_COLUMN_H
                    else self.OVER_Z_CEILING)
-        over_z = min(top_z + 0.08, ceiling)
+        over_z = min(top_z + BOX_SIZE / 2.0 + 0.04, ceiling)
         log.info(f'=== PLACE: box onto column {tag_id} at ({px:.2f},{py:+.2f}) h={height} ===')
         # Check every move here: a failed move that goes unchecked leaves the
         # arm wherever it happened to stop, and detaching/releasing at THAT
@@ -410,12 +472,26 @@ class Mission2(Mission):
         self.move_pose(px, py, over_z, 0.0, cartesian=True, label='retreat',
                        quat_xyzw=zdown_quat(0.0))
         self.arm.remove_collision_object(BOX_ID)
-        self.move_config(HOME_CONFIG, 'gripper-down ready')
-        # back the base off the column so Nav2 can plan away (right up against
-        # a solid column it can't find a valid start pose otherwise).
+        # ORDER MATTERS: back the BASE off first, and only then return the arm
+        # to the claw-ready pose.
+        #
+        # Doing it the other way round knocks the box straight back off the
+        # column. HOME_CONFIG holds the fingertips at 0.50 m above the floor,
+        # but the columns are now up to 0.50 m TALL and the placed box sits at
+        # 0.50-0.56 m - so coming down to the ready pose while the base is
+        # still parked at the column sweeps the open jaws down through the box
+        # that was just placed. Measured live: the box ended up on the floor
+        # 0.228 m back toward the robot, while every step still reported
+        # success. (This could not happen on the old robot: its ready pose was
+        # 0.27 m up and its columns only 0.08-0.16 m tall, so the arm always
+        # returned well clear above them.)
+        #
+        # Backing off 0.22 m first puts the column's near face at ~0.85 in
+        # base_link, leaving the ready-pose jaws at 0.70 about 0.11 m clear.
         log.info('[place] backing off the column')
         self._drive_blind(-0.22, 3.5)
         self._stop_base()
+        self.move_config(HOME_CONFIG, 'gripper-down ready')
         if not self._placement_landed(height, color, tag_id):
             return False
         log.info(f'=== PLACE: DONE (column {tag_id}) ===')
@@ -438,18 +514,33 @@ class Mission2(Mission):
         The detection MUST be gated to just above the column top, because each
         column is deliberately painted its box's colour -- so an ungated
         'is there a red blob?' sees the pillar and the box as ONE blob, and the
-        pillar wins on area: its front face is 0.12x0.08 against the box's
-        0.045x0.045, ~5x larger. Measured live (run 1, bare pillar, no box):
-        centroid z=-0.005 from 11k-49k px. A placed box only drags that
-        area-weighted centroid to about +0.005 -- under this function's own
-        +0.0125 threshold -- so the ungated check would fail every SUCCESSFUL
-        placement. Gating from 5 mm above the column top (camera frame, so
-        height - 0.05 for base_link and another -0.01 for the camera mount)
-        leaves the pillar out of the blob entirely: a detection up there IS the
-        box on the column, and a box on the floor falls outside the gate and is
-        correctly reported as not placed."""
+        pillar wins on area (now 0.20 wide x 0.30-0.50 tall against the box's
+        0.06, i.e. far MORE lopsided than before). A placed box would barely
+        shift that area-weighted centroid, so the ungated check would fail
+        every SUCCESSFUL placement. Gating to a band around where the box
+        itself must be leaves the pillar out of the blob entirely.
+
+        The gate is in the CAMERA frame, so the world height of the placed box
+        (column top + half a box, above the FLOOR) has to be converted by
+        subtracting the camera's own height. That conversion is why the old
+        bound was wrong for this robot: it assumed a camera ~0.05 m off the
+        floor, and the front camera now sits at FRONT_CAM_Z = 0.332 m, so a
+        correctly-placed box reads ~0.33 m LOWER in camera z than the old
+        expression predicted -- the gate would have excluded every real
+        placement."""
         log = self.get_logger()
-        gate = (0.05, 1.5, -0.6, 0.6, height - 0.055, height + 0.05)
+        # The gate must START ABOVE THE COLUMN TOP, not merely near the box.
+        # Centring it on the box (+/- a few cm) lets the top slice of the
+        # pillar into the blob, and since the pillar is 0.20 m wide against the
+        # box's 0.06 it instantly dominates the centroid - so the check passes
+        # whether or not a box is there. Measured live: a box that had been
+        # knocked onto the FLOOR was still "verified at z=0.359", because what
+        # the camera actually locked onto was the top 2 cm of the blue column.
+        # Starting 5 mm above the top excludes the pillar entirely, so any
+        # detection inside the gate really is the box.
+        lo = height + 0.005 - FRONT_CAM_Z
+        hi = height + BOX_SIZE + 0.02 - FRONT_CAM_Z
+        gate = (0.05, 1.5, -0.6, 0.6, lo, hi)
         det = self.detect_box_front(timeout_sec=2.0, color=color, gate=gate)
         if det is None:
             log.error(f'[place] no {color} box above column {tag_id}\'s top '
@@ -606,7 +697,17 @@ class Mission2Tugbot(Mission2):
     of the table box. Gate every colour detection (both the box pick and the
     column placement) to dead-ahead/close/low, the same technique
     Mission2Ionic uses for its navy-blue-walls problem."""
-    TUGBOT_GATE = (0.05, 2.0, -0.6, 0.6, -0.15, 0.3)
+    # Camera-frame gate (X-forward, Y-left, Z-up, metres) that rejects this
+    # world's same-coloured clutter. Re-derived for the scaled-up props AND the
+    # new camera height: the gate's z bounds are relative to the LENS, which now
+    # sits FRONT_CAM_Z = 0.332 m off the floor, so a world height converts as
+    # (height - 0.332). The targets that must stay inside it:
+    #   box on the 0.30 m table, centre 0.33  ->  cam z ~ -0.00
+    #   column bodies, floor 0.00 to 0.50     ->  cam z -0.33 .. +0.17
+    # The old (-0.15, 0.30) band was derived when the lens was near floor level;
+    # against this camera it would have cut off every column below its top few
+    # centimetres and the table boxes with it.
+    TUGBOT_GATE = (0.05, 2.5, -0.7, 0.7, -0.36, 0.25)
     COLUMN_DETECT_GATE = TUGBOT_GATE
     # Column 0 (short, 8cm) landed a measured 0.19 m short of the column
     # (box at world x=-0.81 vs the column's -1.0) despite "PLACE: DONE" --

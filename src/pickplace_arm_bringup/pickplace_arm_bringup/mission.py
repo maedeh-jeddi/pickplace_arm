@@ -31,7 +31,7 @@ from nav2_msgs.action import NavigateThroughPoses
 
 from pickplace_arm_bringup.nav_and_pick import NavAndPick, APPROACH_DIST
 from pickplace_arm_bringup.pick_and_place import (
-    HOME_CONFIG, scan_quat, GRIPPER_X, GRIPPER_Y)
+    HOME_CONFIG, scan_quat, GRIPPER_X, GRIPPER_Y, BOX_SIZE)
 from pickplace_arm_bringup.search_and_pick import (
     APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH,
@@ -48,11 +48,12 @@ from pickplace_arm_bringup.search_and_pick import (
 PHASE2_HANDOFF_DIST = 0.60
 STOP_DISTANCE_FINE = 0.41
 
-# Claw approach: stop driving when the FRONT camera reads the box this far ahead
-# -- the front cam reads ~0.02 m short, so at 0.36 the box is actually ~0.38 m
-# ahead, directly under the gripper-down ready pose. Centre laterally to within
-# CLAW_Y_TOL (the jaws close in y, so lateral accuracy matters most).
-CLAW_STOP_X = GRIPPER_X - 0.02
+# Claw approach: stop driving when the FRONT camera reads the box this far
+# ahead. The camera sees the box's NEAR FACE, so a reading of
+# GRIPPER_X - BOX_SIZE/2 means the box CENTRE is at GRIPPER_X, i.e. directly
+# under the gripper-down ready pose. Centre laterally to within CLAW_Y_TOL (the
+# jaws close in y, so lateral accuracy matters most).
+CLAW_STOP_X = GRIPPER_X - BOX_SIZE / 2.0
 CLAW_Y_TOL = 0.02
 
 # Hand-off distance from the front-camera coarse approach to the wrist-camera
@@ -343,8 +344,28 @@ class Mission(NavAndPick):
                     log.info(f'[claw] box under gripper (front {bx:.2f},{by:+.2f})')
                     return True
                 fwd = max(0.0, bx - CLAW_STOP_X)
-                twist.linear.x = min(APPROACH_LINEAR_MAX,
-                                     max(APPROACH_LINEAR_MIN, APPROACH_LINEAR_GAIN * fwd))
+                # Only apply the minimum-speed floor while there is still
+                # forward distance to close. The floor exists so the skid-steer
+                # reliably breaks static friction, but applying it
+                # unconditionally means that once the box is at/inside
+                # CLAW_STOP_X but still off-centre laterally, the base keeps
+                # crawling forward at 0.08 m/s with nothing left to gain --
+                # and drives itself into the table.
+                #
+                # That is exactly how the blue pick failed: the base ended with
+                # its bumper hard against the table (detection frozen at
+                # (0.627, 0.089) for the whole timeout, byte-identical pixel
+                # counts = not moving), because |by|=0.089 never met
+                # CLAW_Y_TOL and the loop never stopped pushing.
+                #
+                # With the floor gated, an x-satisfied/y-unsatisfied state
+                # turns IN PLACE instead. That converges: `by` is the box's
+                # lateral offset in base_link, so rotating to face the box
+                # drives it to ~0 without needing any more room.
+                twist.linear.x = (min(APPROACH_LINEAR_MAX,
+                                      max(APPROACH_LINEAR_MIN,
+                                          APPROACH_LINEAR_GAIN * fwd))
+                                  if fwd > 0.0 else 0.0)
                 twist.angular.z = max(-APPROACH_ANGULAR_MAX,
                                       min(APPROACH_ANGULAR_MAX,
                                           APPROACH_ANGULAR_GAIN * math.atan2(by, bx)))

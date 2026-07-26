@@ -13,10 +13,17 @@ the wrist-mounted RGB-D camera locates the box by color in the point cloud,
 and that detected position (transformed into base_link via TF) drives the
 grasp -- move the box and re-run and it is found and picked again.
 
-Geometry (all arm poses are for the `gripper_base` link, in `base_link`):
-  * pick  : box on the ground, (x, y) from detection -> grasp z 0.03, pre-grasp z 0.15
-  * place : ground at ~(0.50, 0.35)
-Grasp/place z were verified reachable with compute_ik (z-down gripper).
+Robot: Clearpath Husky A200 base + Franka FR3 (7 DOF) + Franka Hand.
+
+Geometry (all arm poses are for the `fr3_hand_tcp` link, in `base_link`):
+  * pick  : box on the ground, (x, y) from detection -> grasp z at the box
+            centre, pre-grasp 0.12 m above it
+  * place : ground at PLACE_XY
+
+NOTE: the numeric pose constants below have NOT been re-verified for this
+robot. They were swept with /compute_ik against a 6-DOF placeholder arm on a
+much smaller chassis, and are carried over here only as plausible starting
+points. See the comments on each for what specifically needs redoing.
 """
 import math
 import time
@@ -42,29 +49,56 @@ import tf2_geometry_msgs  # noqa: F401  (registers PointStamped transform suppor
 
 from pymoveit2 import MoveIt2
 
-ARM_JOINTS = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-# Indices of the pure ROLL joints (rotate about their own axis, limits +/-pi):
-# j1 (base yaw), j4 (forearm roll), j6 (wrist roll). For these, an angle and
-# angle +/- 2*pi are the SAME orientation, so a goal near one +/-pi limit can be
-# reached from near the other by commanding the equivalent value -- avoiding a
-# useless ~2*pi unwind. (j2/j3/j5 are pitch joints with real sub-2*pi ranges.)
-ROLL_JOINT_IDX = (0, 3, 5)
-# Roll joints are limited to +/-2*pi in the URDF (a small margin below keeps the
-# normalized equivalent safely inside the limit).
+ARM_JOINTS = ['fr3_joint1', 'fr3_joint2', 'fr3_joint3',
+              'fr3_joint4', 'fr3_joint5', 'fr3_joint6', 'fr3_joint7']
+# EMPTY for the FR3, which disables _normalize_roll_config entirely.
+#
+# The old 6-DOF placeholder arm gave j1/j4/j6 a deliberate +/-2*pi range, so a
+# target near one +/-pi limit had an equivalent (same orientation) near the
+# other that avoided a useless ~2*pi unwind. NO FR3 joint has that: the widest
+# is joint7 at +/-3.05 rad, well under 2*pi, so `angle +/- 2*pi` is always
+# outside the limit and there is never an alternative to pick. Leaving the old
+# indices here would just generate unreachable targets.
+ROLL_JOINT_IDX = ()
 ROLL_LIMIT = 2.0 * math.pi - 0.02
-GRIPPER_JOINTS = ['left_finger_joint', 'right_finger_joint']
-GRASP_LINK = 'gripper_base'
-FINGER_LINKS = ['left_finger', 'right_finger', 'gripper_base']
+# Only finger_joint1 is commanded; fr3_finger_joint2 mimics it (URDF <mimic>),
+# so the gripper controller owns exactly one joint.
+GRIPPER_JOINTS = ['fr3_finger_joint1']
+# The Franka Hand's TCP frame, midway between the fingertips at 0.1034 m along
+# the hand's approach axis. This is the frame every arm pose below is for -
+# note it is a FINGERTIP frame, whereas the old `gripper_base` was the gripper
+# BODY, so grasp/approach heights measured from it are offset relative to the
+# old numbers as well as being on a different robot.
+GRASP_LINK = 'fr3_hand_tcp'
+FINGER_LINKS = ['fr3_leftfinger', 'fr3_rightfinger', 'fr3_hand']
 
 # --- task geometry (base_link frame) -----------------------------------------
+#
+# Re-derived for the Husky A200 + FR3 with /compute_ik (collision-aware, zdown
+# fingertip orientation, seeded from the previous pose in the sequence). All of
+# the operating points below were confirmed reachable with margin, and the
+# ready -> descend -> lift -> carry chain confirmed branch-flip free (max joint
+# step 0.38 rad through the grasp, 0.81 into the carry).
 BOX_ID = 'target_box'
-BOX_SIZE = 0.045
-# Re-derived via /compute_ik sweep after the arm links were shortened 30%
-# (old reach ~0.94m -> new ~0.66m); (0.50, 0.35) is no longer reachable.
-PLACE_XY = (0.30, 0.20)
-GRASP_Z = 0.03          # gripper_base z when grasping a ground box
-APPROACH_Z = 0.15       # pre-grasp / lift height
-GRIP_OPEN = 0.03
+# Boxes scaled 0.045 -> 0.06 with the rest of the world (see the models/ SDFs
+# and mission_2_tugbot.launch.py). The Franka Hand's jaw gap is 2 x 0.04 =
+# 0.08 m, so a 0.06 box still leaves 1 cm of clearance a side when open.
+BOX_SIZE = 0.06
+# Ground plane in the base_link frame. base_link is the Husky A200 chassis
+# origin, which sits wheel_radius - wheel_vertical_offset = 0.1651 - 0.03282
+# above the floor. (Was -0.05 on the placeholder base.)
+GROUND_Z = -0.13228
+# Front camera height above the FLOOR (front_camera_link is at base_link z=0.20).
+# Detection gates are expressed in the CAMERA frame, so converting a known
+# world height into a gate bound needs this.
+FRONT_CAM_Z = 0.20 - GROUND_Z          # 0.33228 m above the floor
+PLACE_XY = (0.70, 0.25)
+GRASP_Z = GROUND_Z + BOX_SIZE / 2.0   # fingertip z when grasping a ground box
+APPROACH_Z = GRASP_Z + 0.15           # pre-grasp / lift height
+# Franka Hand: finger_joint1 is 0.0 fully closed and 0.04 fully open (per-finger
+# travel, so the jaw gap is twice this). 0.038 opens to a 0.076 m gap - clear of
+# the 0.06 box on both sides without sitting on the hard stop.
+GRIP_OPEN = 0.038
 GRIP_CLOSED = 0.0
 # Box models that can be rigidly grasped (one DetachableJoint per colour on the
 # robot; the model names are box_red/box_green/box_blue in every world).
@@ -72,77 +106,112 @@ BOX_COLORS = ('red', 'green', 'blue')
 
 # --- grasp verification -------------------------------------------------------
 # After the jaws close, a finger joint held OPEN by the box reads clearly above
-# an empty (fully-closed) grasp: empirically the finger position is ~0.000 when
-# the jaws close on air, but 0.004-0.005 when a box (half-width 0.0225) is
-# pinched between them (the box squeezes but the pads never reach 0). A box
-# grasped nearer the arm's reach edge reads a bit lower (~0.0024), so the
-# holding-vs-empty threshold is set with margin below the reliable held value.
-FINGER_HELD_MIN = 0.0015
+# an empty (fully-closed) grasp. The sense of the reading is unchanged on the
+# Franka Hand - finger_joint1 is 0.0 closed and grows as the jaws open - but
+# the SCALE is different: each Franka finger travels 0.04 m, so a box of
+# half-width 0.0225 should hold finger_joint1 at roughly 0.0225 rather than the
+# 0.004-0.005 the old gripper reported. The threshold is set well below that
+# expected value and well above zero.
+#
+# With the 0.06 box, a holding finger_joint1 should sit near 0.030 (half the
+# box) against ~0.000 on air, so this threshold has huge margin either side.
+FINGER_HELD_MIN = 0.015
 # Grasp attempts before giving up: a fresh scan + descend each time, so a box
 # nudged by a missed first attempt is re-located and re-grasped instead of the
 # robot silently carrying nothing.
 MAX_GRASP_ATTEMPTS = 3
 
-# Compact "carry" pose: box held low and centered over the base so it rides
-# stably while the mobile base drives to the delivery point.
-# z raised 0.18 -> 0.30 to clear the LIDAR (sits at x=0.14, z=0.06; its scan
-# only excludes a 90deg wedge directly BEHIND it, not in front -- at z=0.18
-# the held box, hanging below gripper_base since the fingers extend down when
-# zdown-oriented, dipped into the LIDAR's forward scan plane and
-# self-detected as an obstacle 0.12-0.14m dead ahead, which Nav2 read as
-# "collision ahead" with no recovery able to clear it since the box is still
-# there afterward). BUT 0.30 turned out unreachable from the post-lift arm
-# config without a 180deg base-yaw flip: compute_ik seeded from the real
-# post-'claw lift' joint state finds a smooth, same-branch solution up to
-# EXACTLY z=0.26 (j1 stays ~0), and NO_IK_SOLUTION or a flipped branch
-# (j1 jumps to +/-pi) for everything above that -- `_move_pose_direct`'s
-# strict, seeded-IK carry move (deliberately never falls back to an unseeded
-# pose plan while holding the box) correctly refused the flip and failed
-# every time, so the mission re-opened the gripper each attempt ("release-
-# after-failed-carry") and looked like the box kept falling out mid-carry.
-# 0.26 is therefore the ceiling for THIS branch -- verified via a
-# /compute_ik sweep (x 0.16-0.26, z 0.26-0.30) that 0.26 is the highest z
-# reachable without a flip at any nearby x.
-CARRY_POSITION = (0.26, 0.00, 0.26)
+# Compact "carry" pose: box held over the base so it rides stably while the
+# mobile base drives to the delivery point.
+#
+# Re-derived. Two clearances drive it, both re-checked for this robot:
+#   * LIDAR: it now sits at base_link (0.4449, 0, 0.2714), i.e. its horizontal
+#     scan plane is 0.4037 m above the floor. The carried box rides at 0.65 m,
+#     so its underside (0.62) clears that plane by ~0.22 m and cannot be
+#     self-detected as an obstacle dead ahead (the failure the old 0.18->0.30
+#     tuning chain was chasing).
+#   * FRONT CAMERA: at base_link x=0.5087. Holding the box at x=0.50 keeps it
+#     just BEHIND the camera plane, so it never occludes the column search on
+#     the drive over.
+# Seeded IK from the post-lift state reaches it in one smooth step (0.81 rad,
+# no branch flip), so the strict carry move has a same-branch solution.
+CARRY_POSITION = (0.50, 0.00, GROUND_Z + 0.65)
 
-# Neutral / "ready" arm configuration (joint angles j1..j6): the gripper points
-# STRAIGHT DOWN, reaching ~0.38 m ahead at ~0.22 m height -- a "claw" ready pose.
-# The arm spawns in this pose (see initial_value in pickplace_arm.gazebo.xacro)
-# and holds it through search + approach, so the mobile base only has to drive
-# the box directly under the gripper (front camera guides that), then the gripper
-# descends straight down onto it -- no wrist reorientation, no gripper spin.
-# (This IS the reachable straight-down IK for gripper_base at (0.38,0,0.22).)
-HOME_CONFIG = [0.0, 0.52, 1.14, -3.14, -1.48, 0.0]
+# Neutral / "ready" claw configuration (joint angles j1..j7): the gripper points
+# STRAIGHT DOWN with the fingertips at (GRIPPER_X, 0, 0.50 above the floor).
+#
+# Derived with /compute_ik (collision-aware, zdown fingertip). Franka's own
+# `ready` pose CANNOT be used for this: it puts the fingertips at x=0.387,
+# which on a Husky is directly over the robot's own top plate (the chassis
+# spans x +/-0.494) and BEHIND the front camera at x=0.509 - so the gripper
+# could not descend without hitting the robot, and the camera could not see
+# what it was descending onto. The claw point has to sit beyond the front
+# bumper, which is what GRIPPER_X below does.
+HOME_CONFIG = [0.0, 0.5012, 0.0, -1.9509, 0.0, 2.452, 0.7854]
 
-# Claw geometry: where the gripper sits (base_link) in the ready pose, and the
-# grasp/lift heights. The base positions the box under GRIPPER_X/Y, then the
-# gripper descends straight down.
-GRIPPER_X = 0.38
+# Claw geometry: where the fingertips sit (base_link) in the HOME_CONFIG pose,
+# and the grasp/lift heights. The base positions the box under GRIPPER_X/Y,
+# then the gripper descends straight down.
+#
+# GRIPPER_X = 0.70 was chosen against three hard constraints, not tuned:
+#   1. CLEAR OF THE ROBOT. The Husky chassis ends at x=0.4937, so anything the
+#      gripper descends onto must be beyond that or the arm drives into its own
+#      top plate. 0.70 leaves 0.21 m of clearance.
+#   2. IN FRONT OF THE CAMERA. front_camera_link is at x=0.5087; the claw point
+#      must be ahead of it to be seen at all. 0.70 puts the target 0.19 m ahead
+#      of the lens - past its 0.05 m near clip, and at that range its 73.7 deg
+#      vertical FOV spans floor heights 0.19..0.48, which brackets the 0.30 m
+#      table top and the boxes standing on it.
+#   3. COMFORTABLY REACHABLE. 0.62 m from the arm base, i.e. 73% of the FR3's
+#      0.855 m reach, so it is nowhere near the singular edge.
+# READY_Z holds the fingertips 0.50 m up: high enough to clear the 0.36 m box
+# tops while driving, low enough that the descent is short.
+GRIPPER_X = 0.70
 GRIPPER_Y = 0.0
-READY_Z = 0.22
-# The front camera reads the box's forward distance ~2 cm short of ground truth
-# (measured); add this back when descending onto it.
-FRONT_X_OFFSET = 0.02
+READY_Z = GROUND_Z + 0.50
+# Reach check, from the URDF: fr3_link0 sits 0.3837 m above the floor, so at
+# the FR3's full 0.855 m reach the floor is reachable out to a 0.7641 m
+# horizontal radius about the arm base - x <= 0.844 in base_link, i.e. 0.35 m
+# beyond the Husky's front bumper (chassis front face is at x=0.4937).
+#
+# The front camera sees a box's NEAR FACE, not its centre, so the detected x is
+# half a box short of where the jaws must go. For the 0.06 box that is 0.03.
+FRONT_X_OFFSET = BOX_SIZE / 2.0
+# Hard cap on how far forward a measured target may be acted on, so a bad
+# detection can never command an unreachable pose. Verified with /compute_ik:
+# zdown fingertip poses solve out to x=0.85 at every working height (0.33-0.61
+# above the floor). Was GRIPPER_X + 0.03, which on the old arm WAS the reach
+# edge; here that would clamp legitimate column placements (0.75) short.
+MAX_REACH_X = 0.85
 
 # Expected box centroid height in base_link frame (ground plane, see add_box):
 # used only as a sanity check against the detected z, not as the commanded z.
-EXPECTED_BOX_Z = -0.05 + BOX_SIZE / 2.0
+EXPECTED_BOX_Z = GROUND_Z + BOX_SIZE / 2.0
 
 # --- perception ---------------------------------------------------------------
-# Fixed vantage point the arm moves to before scanning for the box. Chosen so
-# the eye-in-hand camera's frustum covers the reachable table area on the
-# ground plane; verify/tune empirically (see detect_box_pose debug dump).
-# Position re-derived via /compute_ik sweep after the arm links were
-# shortened 30% (old reach ~0.94m -> new ~0.66m); (0.40, 0.60) is no longer
-# reachable.
-# Pitch: the wrist camera's mount now has ZERO tilt of its own (see
-# camera_joint in the URDF -- rigidly aligned with gripper_base), so this
-# pitch is the WHOLE downward look angle rather than a delta on top of a
-# mount tilt. Its value reproduces the original (pre-mount-tuning) camera
-# direction exactly (mount 28.6deg + pitch 55deg = 83.6deg total, all from
-# pitch now), so this pose's tuned detection range is unchanged.
-SCAN_POSITION = (0.22, 0.00, 0.40)
-SCAN_PITCH = math.radians(83.6)
+# Fixed vantage point the arm moves to before scanning for the box, so the
+# eye-in-hand camera's frustum covers the ground ahead of the robot.
+#
+# THE WRIST CAMERA'S AXIS MOVED BY 90 DEGREES. On the old gripper the camera
+# looked along gripper_base's +x, which is PERPENDICULAR to the approach
+# direction (+z) - hence the old note that at zdown the camera saw only
+# horizontally and scanning needed a pitched pose. On the Franka Hand the
+# camera is mounted looking along the hand's +z, i.e. ALONG the approach axis
+# (see camera_joint in the URDF), so it now sees exactly where the gripper is
+# going. That is the better arrangement, but it inverts what `pitch` means.
+#
+# SCAN_PITCH is therefore the old 83.6 deg plus exactly the 90 deg the camera
+# axis rotated by. scan_quat(pitch) rotates about y, mapping the camera axis
+# to (cos p, 0, -sin p) before and (sin p, 0, cos p) now; at 173.6 deg that
+# gives (0.1115, 0, -0.9938), the SAME look direction the old 83.6 deg
+# produced - near straight down, tilted slightly forward.
+#
+# SCAN_POSITION holds the fingertips out beyond the bumper and high, so the
+# wrist camera (0.0634 m behind hand_tcp along the approach axis) looks down
+# over the workspace from ~0.75 m. Only the standalone pick_and_place demo uses
+# this; mission_2 never scans with the wrist, it drives the base under the claw.
+SCAN_POSITION = (0.60, 0.00, GROUND_Z + 0.70)
+SCAN_PITCH = math.radians(173.6)
 
 # HSV bounds (OpenCV H 0-180) for each box colour. Red wraps around H=0, so it
 # needs TWO ranges. Each entry is a list of (lower, upper) HSV tuples; a pixel
@@ -425,7 +494,11 @@ class PickAndPlace(Node):
         m = JointTrajectory()
         m.joint_names = GRIPPER_JOINTS
         pt = JointTrajectoryPoint()
-        pt.positions = [float(pos), float(pos)]
+        # One entry per commanded joint. The Franka Hand exposes a single
+        # commandable joint (finger_joint2 mimics finger_joint1), where the old
+        # gripper had two, so this is sized off GRIPPER_JOINTS rather than
+        # hardcoded.
+        pt.positions = [float(pos)] * len(GRIPPER_JOINTS)
         pt.time_from_start = Duration(sec=1)
         m.points = [pt]
         for _ in range(3):
@@ -447,7 +520,7 @@ class PickAndPlace(Node):
 
     def add_box(self, xy, z_center=None):
         if z_center is None:
-            z_center = -0.05 + BOX_SIZE / 2.0     # ground box in base_link frame
+            z_center = GROUND_Z + BOX_SIZE / 2.0  # ground box in base_link frame
         self.arm.add_collision_box(
             id=BOX_ID, size=(BOX_SIZE, BOX_SIZE, BOX_SIZE),
             position=(xy[0], xy[1], z_center), quat_xyzw=(0.0, 0.0, 0.0, 1.0),
@@ -643,7 +716,7 @@ class PickAndPlace(Node):
                 continue
 
             # 3) attach the box so MoveIt carries it (and RViz shows it grasped)
-            self.add_box(box_xy, z_center=-0.05 + BOX_SIZE / 2.0)
+            self.add_box(box_xy, z_center=GROUND_Z + BOX_SIZE / 2.0)
             self.arm.attach_collision_object(
                 id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
             time.sleep(0.5)
@@ -701,7 +774,7 @@ class PickAndPlace(Node):
         if det is None:
             log.warn('[claw] box not seen for grab')
             return False
-        bx = min(GRIPPER_X + 0.03, det[0] + x_offset)
+        bx = min(MAX_REACH_X, det[0] + x_offset)
         by = det[1]
         self.move_pose(bx, by, grasp_z, 0.0, cartesian=True,
                        label='claw descend', quat_xyzw=zdown_quat(0.0))
@@ -718,8 +791,11 @@ class PickAndPlace(Node):
         # to lose the box.
         self.attach_box(color)
 
-        # attach so MoveIt carries it + RViz shows it, lift straight up, carry
-        self.add_box((bx, by), z_center=grasp_z - 0.0575)
+        # attach so MoveIt carries it + RViz shows it, lift straight up, carry.
+        # The grasp frame is now fr3_hand_tcp, which sits BETWEEN the jaws - so
+        # the held box's centre is at the grasp z itself, not 0.0575 m below it
+        # as it was when poses were commanded for the gripper BODY.
+        self.add_box((bx, by), z_center=grasp_z)
         self.arm.attach_collision_object(
             id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
         time.sleep(0.5)

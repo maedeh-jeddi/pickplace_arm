@@ -1,7 +1,9 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import (
+    AppendEnvironmentVariable, IncludeLaunchDescription, RegisterEventHandler,
+)
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command
@@ -11,6 +13,19 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     pkg_description = get_package_share_directory('pickplace_arm_description')
+
+    # Gazebo resolves package://<pkg>/... mesh URIs (as robot_state_publisher
+    # emits them) by rewriting the scheme to model://<pkg>/... and searching
+    # GZ_SIM_RESOURCE_PATH for a <dir>/<pkg>/... match. Nothing set this
+    # before because the old placeholder robot had no mesh files at all (pure
+    # box/cylinder/sphere primitives) -- the Husky A200 and FR3/Franka Hand
+    # meshes now referenced out of clearpath_platform_description and
+    # franka_description need their share dirs' PARENT on the path, since
+    # get_package_share_directory already returns .../share/<pkg_name>.
+    gz_resource_paths = [
+        os.path.dirname(get_package_share_directory('clearpath_platform_description')),
+        os.path.dirname(get_package_share_directory('franka_description')),
+    ]
 
     xacro_file = os.path.join(pkg_description, 'urdf', 'pickplace_arm.urdf.xacro')
     # Default to the warehouse world (bigger, varied obstacles); override with
@@ -69,9 +84,13 @@ def generate_launch_description():
             '-name', 'pickplace_arm',
             '-x', spawn_x,
             '-y', spawn_y,
-            # base_link (the root) sits one wheel-radius above the ground so
-            # the wheels touch the floor; base_footprint hangs below it.
-            '-z', '0.05'
+            # base_link (the root) is the Husky A200's chassis origin, which
+            # sits (wheel_radius - wheel_vertical_offset) = 0.1651 - 0.03282
+            # = 0.13228 m above the ground so the wheels touch the floor;
+            # base_footprint hangs exactly that far below it. A small margin
+            # is added so the robot settles onto the floor rather than
+            # spawning interpenetrating it.
+            '-z', '0.14'
         ],
         output='screen',
     )
@@ -179,7 +198,12 @@ def generate_launch_description():
         ],
     )
 
+    set_gz_resource_path = [
+        AppendEnvironmentVariable('GZ_SIM_RESOURCE_PATH', p) for p in gz_resource_paths
+    ]
+
     return LaunchDescription([
+        *set_gz_resource_path,
         gazebo,
         robot_state_publisher,
         spawn_entity,

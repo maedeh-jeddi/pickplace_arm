@@ -1,88 +1,64 @@
 <?xml version="1.0"?>
 <robot name="pickplace_arm" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+  <!-- ==================================================================== -->
+  <!-- Mobile manipulator: Clearpath Husky A200 base + Franka FR3 arm +      -->
+  <!-- Franka Hand gripper.                                                  -->
+  <!--                                                                       -->
+  <!-- Base and arm are REFERENCED out of the upstream description packages  -->
+  <!-- via $(find ...), never copied, so their meshes stay in one place:      -->
+  <!--   * clearpath_platform_description (humble)  -> Husky A200            -->
+  <!--   * franka_description 1.6.1                 -> FR3 arm + Franka Hand -->
+  <!--                                                                       -->
+  <!-- NOTE on the Husky variant: the A300 does NOT exist on clearpath_common -->
+  <!-- humble (it is jazzy-only). A200 is the humble Husky, and is what this  -->
+  <!-- file uses.                                                            -->
+  <!--                                                                       -->
+  <!-- NOTE on the Franka wrapper: clearpath_manipulators_description's       -->
+  <!-- franka.urdf.xacro is NOT used. It calls franka_description's           -->
+  <!-- `franka_arm` macro with `arm_id=` and no `accelerometer_config=`,      -->
+  <!-- which only matches franka_description <= 1.0.2 (`arm_id` was renamed   -->
+  <!-- to `robot_type` in 1.5.0; `accelerometer_config` became required in    -->
+  <!-- 1.1.0). Against the 1.6.1 checkout here it fails at parse time. Since  -->
+  <!-- Clearpath hardcodes no mount pose either (its `franka` macro takes     -->
+  <!-- `parent_link` + an `*origin` block filled in per-robot from            -->
+  <!-- robot.yaml via clearpath_config), the wrapper offered no proven        -->
+  <!-- values to reuse -only a version constraint. So this file calls       -->
+  <!-- franka_description's own `franka_robot` macro directly, with the       -->
+  <!-- parameter names 1.6.1 actually expects.                               -->
+  <!-- ==================================================================== -->
+
   <!-- When true, pull in the Gazebo Harmonic ros2_control system + sensors.
        Left false for the MoveIt/mock-hardware description so we don't end up
        with two ros2_control systems. gazebo.launch.py sets this to true. -->
   <xacro:arg name="use_gazebo" default="false"/>
 
-  <!-- base_link is the free-floating root: a mobile base (see wheels below)
-       carries it, rather than a fixed bolt to a "world" frame. -->
+  <!-- ============ Clearpath A200 args ============
+       These are declared HERE, before the A200 include, purely to pre-empt the
+       defaults a200.urdf.xacro declares for them. xacro evaluates <xacro:arg>
+       defaults EAGERLY, and Clearpath's default for `gazebo_controllers` is
+       "$(find clearpath_control)/config/a200/control.yaml" -so simply
+       including the A200 would hard-fail with PackageNotFoundError unless
+       clearpath_control (a control stack we deliberately do not pull in) is
+       built. Declaring the arg first makes the include self-contained.
 
-  <!-- ============ Properties ============ -->
+       is_sim / use_platform_controllers stay false so the A200 contributes
+       GEOMETRY ONLY: no Clearpath ros2_control block and no
+       ign_ros2_control plugin, both of which would collide with our own
+       gz_ros2_control system in pickplace_arm.gazebo.xacro. -->
+  <xacro:arg name="gazebo_controllers" default="unused"/>
+  <xacro:arg name="serial_port" default="unused"/>
+  <xacro:arg name="namespace" default=""/>
+  <xacro:arg name="is_sim" default="false"/>
+  <xacro:arg name="use_platform_controllers" default="false"/>
+
   <xacro:property name="PI" value="3.14159265359"/>
 
-  <!-- Chassis is a box sized proportional to the wheelbase (wheels sit at
-       x=+/-0.12, y=+/-0.15). base_link origin is at wheel-axle height
-       (spawned at world z=0.05); box height 0.08 centered there spans world
-       z 0.01..0.09 so it clears the ground, and the arm still mounts on the
-       top face at z = base_height/2. base_radius is retained only as a
-       representative value for the inertia macro. -->
-  <xacro:property name="base_radius" value="0.13"/>
-  <xacro:property name="base_height" value="0.08"/>
-  <xacro:property name="base_length" value="0.38"/>
-  <xacro:property name="base_width" value="0.26"/>
-
-  <!-- ============ Mobile base (4-wheel skid-steer) ============
-       base_link is spawned at world z=0.05 (see gazebo.launch.py), which is
-       unchanged by adding the base - wheel_radius is chosen to exactly
-       match that spawn height so the wheels touch the ground plane, and
-       every existing ground/grasp-height constant elsewhere in the repo
-       (pick_and_place.py, add_collision_box, etc.) stays valid untouched. -->
-  <xacro:property name="wheel_radius" value="0.05"/>
-  <xacro:property name="wheel_width" value="0.03"/>
-  <xacro:property name="wheel_x_offset" value="0.12"/>
-  <xacro:property name="wheel_y_offset" value="0.15"/>
-
-  <!-- Arm link lengths trimmed 30% from the original (0.15/0.30/0.25/0.10/
-       0.08/0.06) for a more compact reach (~0.66m total vs ~0.94m before).
-       Radii are also tapered link-to-link (thicker at the shoulder, thinner
-       at the wrist) for a cleaner, more proportioned silhouette instead of
-       uniform-thickness segments; this and the joint-cap spheres below
-       are the "nicer looking" visual pass, built entirely from primitives
-       since no mesh-authoring tool (e.g. Blender) is available. -->
-  <xacro:property name="link1_len" value="0.105"/>
-  <xacro:property name="link2_len" value="0.21"/>
-  <xacro:property name="link3_len" value="0.175"/>
-  <xacro:property name="link4_len" value="0.07"/>
-  <xacro:property name="link5_len" value="0.056"/>
-  <xacro:property name="link6_len" value="0.042"/>
-
-  <!-- Lateral (forward, +x) offsets that break the arm out of a single
-       straight line, like real industrial arms (e.g. the UR series'
-       shoulder/wrist offsets). shoulder_offset kinks the upper arm forward
-       of the vertical base-yaw column; wrist_offset steps the wrist cluster
-       forward of the forearm. This avoids the fully-collinear home pose the
-       arm had before (which sat right on top of joint-axis alignments) and
-       gives cleaner IK conditioning near full extension. The J4-J5-J6 wrist
-       cluster itself is left un-offset so it stays a clean spherical wrist
-       for orientation control. Values re-verified reachable via compute_ik. -->
-  <xacro:property name="shoulder_offset" value="0.035"/>
-  <xacro:property name="wrist_offset" value="0.030"/>
-
-  <xacro:property name="link_radius" value="0.030"/>
-  <xacro:property name="link2_radius" value="0.032"/>
-  <xacro:property name="link3_radius" value="0.028"/>
-  <xacro:property name="link4_radius" value="0.026"/>
-  <xacro:property name="link5_radius" value="0.022"/>
-  <xacro:property name="link6_radius" value="0.022"/>
-
-  <!-- Joint-cap sphere radii (visual only, not collision; see each joint
-       below): slightly larger than the thicker of the two links they join,
-       so each pivot reads as a distinct actuator housing. -->
-  <xacro:property name="cap1_radius" value="0.045"/>
-  <xacro:property name="cap2_radius" value="0.040"/>
-  <xacro:property name="cap3_radius" value="0.035"/>
-  <xacro:property name="cap4_radius" value="0.032"/>
-  <xacro:property name="cap5_radius" value="0.028"/>
-  <xacro:property name="cap6_radius" value="0.026"/>
-
-  <!-- Materials -->
-  <material name="arm_orange"><color rgba="0.9 0.45 0.1 1.0"/></material>
+  <!-- Materials for the sensor housings we add ourselves (the A200 and FR3
+       meshes carry their own materials). -->
   <material name="arm_dark"><color rgba="0.15 0.15 0.15 1.0"/></material>
   <material name="arm_grey"><color rgba="0.6 0.6 0.6 1.0"/></material>
 
-  <!-- ============ Inertial Macro ============ -->
   <xacro:macro name="cylinder_inertial" params="mass radius length">
     <inertial>
       <mass value="${mass}"/>
@@ -93,83 +69,124 @@
     </inertial>
   </xacro:macro>
 
-  <xacro:macro name="box_inertial" params="mass x y z">
-    <inertial>
-      <mass value="${mass}"/>
-      <inertia
-        ixx="${mass*(y*y+z*z)/12}" ixy="0.0" ixz="0.0"
-        iyy="${mass*(x*x+z*z)/12}" iyz="0.0"
-        izz="${mass*(x*x+y*y)/12}"/>
-    </inertial>
-  </xacro:macro>
+  <!-- ==================================================================== -->
+  <!-- Husky A200 base                                                       -->
+  <!-- ==================================================================== -->
+  <!-- Provides: base_link (the kinematic ROOT, as before, so MoveIt's
+       world->base_link virtual joint still works), base_footprint,
+       top_chassis_link, inertial_link, the four wheels
+       (front/rear _left/_right _wheel + _wheel_joint -names that happen to
+       match our existing diff_drive_controller config exactly), and the
+       mount frames default_mount / front_bumper_mount / rear_bumper_mount.
 
-  <!-- ============ Base Link (box chassis, proportional to wheels) =======
-       base_link is the kinematic ROOT (as it was before the mobile base was
-       added), so MoveIt's world->base_link virtual joint and Cartesian path
-       planning work exactly as verified. base_footprint (Nav2's ground
-       projection frame) hangs off it as a CHILD below, rather than being the
-       root; making base_footprint the root broke MoveIt's planning tree
-       ("base_link and base_footprint not part of the same tree"). -->
-  <link name="base_link">
-    <visual>
-      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
-      <material name="arm_dark"/>
-    </visual>
-    <collision>
-      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
-    </collision>
-    <xacro:box_inertial mass="2.0" x="${base_length}" y="${base_width}" z="${base_height}"/>
-  </link>
+       Geometry that matters downstream (all in base_link frame):
+         chassis      0.9874 x 0.5709 x 0.2475, top face at z ~ 0.2475
+         base_footprint  z = -0.13228  (so base_link is 0.13228 m off the ground)
+         wheels       x +/-0.256, y +/-0.2775, radius 0.1651, track 0.555
+         default_mount   z = 0.224 -->
+  <xacro:include filename="$(find clearpath_platform_description)/urdf/a200/a200.urdf.xacro"/>
+  <xacro:include filename="$(find clearpath_platform_description)/urdf/a200/attachments/top_plate.urdf.xacro"/>
 
-  <!-- Nav2 ground-projection frame, as a child of base_link (base_link sits
-       one wheel-radius above the ground, so base_footprint is that far
-       below). -->
-  <link name="base_footprint"/>
-  <joint name="base_footprint_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="base_footprint"/>
-    <origin xyz="0 0 ${-wheel_radius}" rpy="0 0 0"/>
+  <xacro:a200 wheel="default"/>
+
+  <!-- Standard user-rail top plate on the A200's default_mount. This is what
+       carries the arm. It adds:
+         top_plate_user_rail_link -> top_plate_link -> top_plate_default_mount
+       putting top_plate_default_mount at base_link (0.07987, 0, 0.25139),
+       i.e. 0.38367 m above the ground -the plate's upper surface. -->
+  <xacro:top_plate name="top_plate" model="default" parent_link="default_mount">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:top_plate>
+
+  <!-- ==================================================================== -->
+  <!-- Franka FR3 arm + Franka Hand                                          -->
+  <!-- ==================================================================== -->
+  <!-- franka_robot builds the arm AND (hand=true, ee_id=franka_hand) the
+       gripper in one call. Produced names, all prefixed `fr3_` because
+       arm_prefix='' and no_prefix=false give prefix = arm_prefix+robot_type+'_':
+         links  fr3_link0..fr3_link8, fr3_hand, fr3_hand_tcp,
+                fr3_leftfinger, fr3_rightfinger
+         joints fr3_joint1..fr3_joint7 (revolute), fr3_joint8 (fixed),
+                fr3_hand_joint (fixed), fr3_finger_joint1 (prismatic),
+                fr3_finger_joint2 (prismatic, MIMICS finger_joint1)
+
+       Parameter choices:
+         connected_to=""       -> suppresses franka's own parent joint so we
+                                  can add our own mount joint below. The macro
+                                  guards it with <unless value="${not
+                                  connected_to}">, so an empty string means
+                                  "no joint".
+         gazebo="false"        -> skips franka's <transmission> tags and its
+                                  ign_ros2_control plugin. We drive the arm
+                                  through our own gz_ros2_control block in
+                                  pickplace_arm.gazebo.xacro instead. Links
+                                  still get full visual (.dae) + collision
+                                  (.stl) meshes and yaml inertials.
+         accelerometer_config="none" -> no accelerometer frames (fr3 ships an
+                                  accelerometers.yaml, but nothing here reads
+                                  those frames).
+         with_sc="false"       -> no coarse self-collision capsule sub-links;
+                                  MoveIt uses the real collision meshes.
+         ros2_control="false"  -> ditto, our own block owns the interfaces. -->
+  <xacro:include filename="$(find franka_description)/robots/common/franka_robot.xacro"/>
+
+  <xacro:franka_robot
+    robot_type="fr3"
+    arm_prefix=""
+    no_prefix="false"
+    joint_limits="${xacro.load_yaml('$(find franka_description)/robots/fr3/joint_limits.yaml')}"
+    inertials="${xacro.load_yaml('$(find franka_description)/robots/fr3/inertials.yaml')}"
+    kinematics="${xacro.load_yaml('$(find franka_description)/robots/fr3/kinematics.yaml')}"
+    dynamics="${xacro.load_yaml('$(find franka_description)/robots/fr3/dynamics.yaml')}"
+    accelerometer_config="none"
+    hand="true"
+    ee_id="franka_hand"
+    xyz_ee="0 0 0"
+    rpy_ee="0 0 ${-PI/4}"
+    tcp_xyz="0 0 0.1034"
+    tcp_rpy="0 0 0"
+    safety_distance="0.03"
+    with_sc="false"
+    gazebo="false"
+    ros2_control="false"
+    connected_to=""/>
+
+  <!-- ============ Arm mount joint ============
+       Bolts the FR3 flat onto the Husky's top plate. Zero offset: the plate's
+       own default_mount frame already sits on the plate's upper surface, and
+       fr3_link0's origin is at the bottom face of the arm base, so the arm
+       stands exactly on the plate -neither floating nor sunk into it.
+
+       No rotation: the FR3's +x (its "forward" at joint1=0) is aligned with
+       the Husky's +x, so the arm faces the same way the base drives.
+
+       This origin is OURS, not Clearpath's. Clearpath hardcodes no Franka
+       mount pose anywhere (see the header note); its generator injects one
+       per-robot from robot.yaml. Mounting on top_plate_default_mount is the
+       canonical Clearpath top-plate attachment point, so this is the same
+       frame their tooling would target. -->
+  <joint name="fr3_mount_joint" type="fixed">
+    <parent link="top_plate_default_mount"/>
+    <child link="fr3_link0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
-  <!-- ============ Wheels (4-wheel skid-steer diff drive) ============
-       Cylinder axis rotated onto Y so wheels roll about the Y axis (forward
-       motion along X), matching the continuous joint axis "0 1 0" below. -->
-  <xacro:macro name="wheel" params="prefix x_reflect y_reflect">
-    <link name="${prefix}_wheel">
-      <visual>
-        <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
-        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
-        <material name="arm_dark"/>
-      </visual>
-      <collision>
-        <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
-        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
-      </collision>
-      <xacro:cylinder_inertial mass="0.3" radius="${wheel_radius}" length="${wheel_width}"/>
-    </link>
+  <!-- ==================================================================== -->
+  <!-- Sensors                                                               -->
+  <!-- ==================================================================== -->
 
-    <joint name="${prefix}_wheel_joint" type="continuous">
-      <parent link="base_link"/>
-      <child link="${prefix}_wheel"/>
-      <origin xyz="${x_reflect*wheel_x_offset} ${y_reflect*wheel_y_offset} 0" rpy="0 0 0"/>
-      <axis xyz="0 1 0"/>
-      <dynamics damping="0.1" friction="0.05"/>
-    </joint>
-  </xacro:macro>
+  <!-- ============ 2D LIDAR (SLAM / Nav2) ============
+       On the front of the top plate. The 270 deg forward arc configured in
+       pickplace_arm.gazebo.xacro excludes a 90 deg wedge pointing straight
+       BACK, which is exactly where the arm stands: the FR3 base is at
+       x=0.07987 and the LIDAR at x=0.44487, so the arm sits 0.365 m directly
+       behind the sensor and subtends only ~+/-21 deg there -comfortably
+       inside the excluded 135..225 deg wedge, so the scan never hits it.
 
-  <xacro:wheel prefix="front_left"  x_reflect="1"  y_reflect="1"/>
-  <xacro:wheel prefix="front_right" x_reflect="1"  y_reflect="-1"/>
-  <xacro:wheel prefix="rear_left"   x_reflect="-1" y_reflect="1"/>
-  <xacro:wheel prefix="rear_right"  x_reflect="-1" y_reflect="-1"/>
-
-  <!-- ============ 2D LIDAR (chassis-mounted, for SLAM/Nav2) ============
-       Mounted at the front edge of the chassis, ahead of both the
-       centrally-mounted arm (base at x=0) and the wrist RGB camera it
-       carries, so neither sits in the sensor's forward view. The scan
-       itself is restricted to a 270 deg forward arc in the Gazebo sensor
-       config (see pickplace_arm.gazebo.xacro) so the excluded 90 deg wedge
-       falls directly behind the sensor, exactly where the arm is,
-       instead of scanning through it. -->
+       HEIGHT CHANGED: this sits 0.403 m above the ground, against 0.11 m on
+       the old placeholder chassis. It now scans well above low obstacles,
+       so any ground-level box that SLAM/Nav2 used to see in the scan will no
+       longer appear. -->
   <link name="lidar_link">
     <visual>
       <geometry><cylinder radius="0.03" length="0.04"/></geometry>
@@ -182,19 +199,16 @@
   </link>
 
   <joint name="lidar_joint" type="fixed">
-    <parent link="base_link"/>
+    <parent link="top_plate_front_mount"/>
     <child link="lidar_link"/>
-    <!-- inset from the front edge (chassis half-length 0.19, lidar radius
-         0.03 -> 0.02 m clearance) and mounted flush on the chassis top face
-         (top face at base_height/2=0.04, lidar half-length 0.02) so it sits
-         on the surface instead of floating above it. -->
-    <origin xyz="0.14 0 0.06" rpy="0 0 0"/>
+    <!-- +z half the sensor body so it rests ON the plate, not half-sunk. -->
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
   </joint>
 
   <!-- IMU: its yaw is fused with the wheel odometry (robot_localization EKF)
-       to stabilize heading, which the 4-wheel skid-steer's wheel-only odom
+       to stabilize heading, which a 4-wheel skid-steer's wheel-only odom
        estimates poorly (lateral scrub during turns causes heading drift that
-       corrupts SLAM). Mounted at the chassis center. -->
+       corrupts SLAM). Mounted inside the chassis, on its centreline. -->
   <link name="imu_link">
     <inertial>
       <mass value="0.02"/>
@@ -205,14 +219,13 @@
   <joint name="imu_joint" type="fixed">
     <parent link="base_link"/>
     <child link="imu_link"/>
-    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+    <origin xyz="0 0 0.12" rpy="0 0 0"/>
   </joint>
 
-  <!-- Front-facing RGB-D camera mounted flush on the CHASSIS FRONT FACE
-       (the +x face is at base_length/2 = 0.19; the camera body is 0.03 deep so
-       its center sits at 0.19 + 0.015 = 0.205), near the top of the face and
-       centred in y. Pitched ~11 deg down so its frustum sweeps the ground
-       ahead for box detection while the base drives. -->
+  <!-- Front-facing RGB-D camera, on the A200's own front_bumper_mount frame
+       (base_link 0.406, 0, 0.091). Pushed forward to clear the chassis front
+       face (at x=0.4937) and raised to look over the bumper line. Detects the
+       box ahead while the base drives. -->
   <link name="front_camera_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -227,15 +240,13 @@
   </link>
 
   <joint name="front_camera_joint" type="fixed">
-    <parent link="base_link"/>
+    <parent link="front_bumper_mount"/>
     <child link="front_camera_link"/>
     <!-- Zero rpy: the camera is rigidly aligned with base_link, so it always
          points exactly along the chassis's own forward direction, with no
-         extra tilt to account for. Its wide 90deg horizontal FOV gives a
-         ~74deg vertical FOV; verify empirically (not just by this geometry
-         argument) that it still detects a table-height box from this mount
-         height at the distances the search/approach logic actually uses. -->
-    <origin xyz="0.205 0 0.01" rpy="0 0 0"/>
+         extra tilt to account for. Resolves to base_link (0.5087, 0, 0.20),
+         i.e. 0.332 m above the ground on the chassis's front face. -->
+    <origin xyz="0.1027 0 0.109" rpy="0 0 0"/>
   </joint>
 
   <link name="front_camera_optical_link"/>
@@ -245,228 +256,21 @@
     <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
   </joint>
 
-  <!-- ============ Link 1 (Shoulder Yaw) ============ -->
-  <link name="link1">
-    <visual>
-      <!-- shoulder joint-cap: visual only, sits over joint1's pivot -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><sphere radius="${cap1_radius}"/></geometry>
-      <material name="arm_dark"/>
-    </visual>
-    <visual>
-      <origin xyz="0 0 ${link1_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link_radius}" length="${link1_len}"/></geometry>
-      <material name="arm_orange"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 ${link1_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link_radius}" length="${link1_len}"/></geometry>
-    </collision>
-    <xacro:cylinder_inertial mass="1.0" radius="${link_radius}" length="${link1_len}"/>
-  </link>
+  <!-- ============ Wrist RGB-D camera (eye-in-hand, on the Franka Hand) ====
+       Mounted on fr3_hand, beside the hand body (its collision capsule has
+       radius 0.04, so x=0.055 clears it) and looking ALONG THE APPROACH AXIS.
 
-  <!-- Roll joint with +/-2pi range (not +/-pi): a target near one pi limit can
-       then be reached from near the other via its +/-2pi equivalent (same
-       orientation) instead of unwinding ~2pi. Still bounded revolute, so no
-       continuous-joint state aliasing. -->
-  <joint name="joint1" type="revolute">
-    <parent link="base_link"/>
-    <child link="link1"/>
-    <origin xyz="0 0 ${base_height/2}" rpy="0 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit lower="-${2*PI}" upper="${2*PI}" effort="50" velocity="1.5"/>
-  </joint>
+       rpy="0 -pi/2 0" maps camera_link's +x onto fr3_hand's +z. That keeps
+       the invariant the mission code relies on -the camera looks exactly
+       where the gripper points, with no per-camera tilt to compensate for -
+       which previously came from camera_link being zero-rpy on gripper_base
+       (whose forward axis was +x). On the Franka Hand the approach axis is
+       +z (fingers close along +/-y, hand_tcp is at +0.1034 z), hence the
+       rotation.
 
-  <!-- ============ Link 2 (Upper Arm Pitch) ============ -->
-  <link name="link2">
-    <visual>
-      <!-- elbow-shoulder joint-cap: visual only, sits over joint2's pivot -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><sphere radius="${cap2_radius}"/></geometry>
-      <material name="arm_dark"/>
-    </visual>
-    <visual>
-      <origin xyz="0 0 ${link2_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link2_radius}" length="${link2_len}"/></geometry>
-      <material name="arm_grey"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 ${link2_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link2_radius}" length="${link2_len}"/></geometry>
-    </collision>
-    <xacro:cylinder_inertial mass="1.2" radius="${link2_radius}" length="${link2_len}"/>
-  </link>
-
-  <joint name="joint2" type="revolute">
-    <parent link="link1"/>
-    <child link="link2"/>
-    <!-- shoulder offset: upper arm steps forward of the base-yaw column -->
-    <origin xyz="${shoulder_offset} 0 ${link1_len}" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="-${PI/2}" upper="${PI/2}" effort="50" velocity="1.5"/>
-  </joint>
-
-  <!-- ============ Link 3 (Forearm Pitch) ============ -->
-  <link name="link3">
-    <visual>
-      <!-- elbow joint-cap: visual only, sits over joint3's pivot -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><sphere radius="${cap3_radius}"/></geometry>
-      <material name="arm_dark"/>
-    </visual>
-    <visual>
-      <origin xyz="0 0 ${link3_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link3_radius}" length="${link3_len}"/></geometry>
-      <material name="arm_orange"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 ${link3_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link3_radius}" length="${link3_len}"/></geometry>
-    </collision>
-    <xacro:cylinder_inertial mass="0.8" radius="${link3_radius}" length="${link3_len}"/>
-  </link>
-
-  <joint name="joint3" type="revolute">
-    <parent link="link2"/>
-    <child link="link3"/>
-    <origin xyz="0 0 ${link2_len}" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="-${PI*0.75}" upper="${PI*0.75}" effort="40" velocity="1.5"/>
-  </joint>
-
-  <!-- ============ Link 4 (Wrist Roll) ============ -->
-  <link name="link4">
-    <visual>
-      <!-- forearm-wrist joint-cap: visual only, sits over joint4's pivot -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><sphere radius="${cap4_radius}"/></geometry>
-      <material name="arm_dark"/>
-    </visual>
-    <visual>
-      <origin xyz="0 0 ${link4_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link4_radius}" length="${link4_len}"/></geometry>
-      <material name="arm_grey"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 ${link4_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link4_radius}" length="${link4_len}"/></geometry>
-    </collision>
-    <xacro:cylinder_inertial mass="0.4" radius="${link4_radius}" length="${link4_len}"/>
-  </link>
-
-  <!-- Forearm roll with +/-2pi range so the gripper-down grasp (j4 ~= +/-pi) is
-       reachable from either side without a ~2pi unwind. -->
-  <joint name="joint4" type="revolute">
-    <parent link="link3"/>
-    <child link="link4"/>
-    <!-- wrist offset: wrist cluster steps forward of the forearm -->
-    <origin xyz="${wrist_offset} 0 ${link3_len}" rpy="0 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit lower="-${2*PI}" upper="${2*PI}" effort="20" velocity="2.0"/>
-  </joint>
-
-  <!-- ============ Link 5 (Wrist Pitch) ============ -->
-  <link name="link5">
-    <visual>
-      <!-- wrist joint-cap: visual only, sits over joint5's pivot -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><sphere radius="${cap5_radius}"/></geometry>
-      <material name="arm_dark"/>
-    </visual>
-    <visual>
-      <origin xyz="0 0 ${link5_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link5_radius}" length="${link5_len}"/></geometry>
-      <material name="arm_orange"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 ${link5_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link5_radius}" length="${link5_len}"/></geometry>
-    </collision>
-    <xacro:cylinder_inertial mass="0.3" radius="${link5_radius}" length="${link5_len}"/>
-  </link>
-
-  <joint name="joint5" type="revolute">
-    <parent link="link4"/>
-    <child link="link5"/>
-    <origin xyz="0 0 ${link4_len}" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="-${PI/2}" upper="${PI/2}" effort="15" velocity="2.0"/>
-  </joint>
-
-  <!-- ============ Link 6 (Tool Flange / Wrist Roll) ============ -->
-  <link name="link6">
-    <visual>
-      <!-- flange joint-cap: visual only, sits over joint6's pivot -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><sphere radius="${cap6_radius}"/></geometry>
-      <material name="arm_grey"/>
-    </visual>
-    <visual>
-      <origin xyz="0 0 ${link6_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link6_radius}" length="${link6_len}"/></geometry>
-      <material name="arm_dark"/>
-    </visual>
-    <collision>
-      <origin xyz="0 0 ${link6_len/2}" rpy="0 0 0"/>
-      <geometry><cylinder radius="${link6_radius}" length="${link6_len}"/></geometry>
-    </collision>
-    <xacro:cylinder_inertial mass="0.2" radius="${link6_radius}" length="${link6_len}"/>
-  </link>
-
-  <!-- Wrist roll with +/-2pi range, same reason as j4. -->
-  <joint name="joint6" type="revolute">
-    <parent link="link5"/>
-    <child link="link6"/>
-    <origin xyz="0 0 ${link5_len}" rpy="0 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit lower="-${2*PI}" upper="${2*PI}" effort="10" velocity="2.0"/>
-  </joint>
-
-  <!-- ============ Gripper (simple 2-finger, mounted on link6) ============ -->
-  <link name="gripper_base">
-    <visual>
-      <geometry><box size="0.06 0.08 0.03"/></geometry>
-      <material name="arm_dark"/>
-    </visual>
-    <collision>
-      <geometry><box size="0.06 0.08 0.03"/></geometry>
-    </collision>
-    <xacro:cylinder_inertial mass="0.15" radius="0.03" length="0.03"/>
-  </link>
-
-  <joint name="gripper_base_joint" type="fixed">
-    <parent link="link6"/>
-    <child link="gripper_base"/>
-    <origin xyz="0 0 ${link6_len}" rpy="0 0 0"/>
-  </joint>
-
-  <xacro:macro name="finger" params="prefix reflect">
-    <link name="${prefix}_finger">
-      <visual>
-        <geometry><box size="0.015 0.02 0.06"/></geometry>
-        <material name="arm_grey"/>
-      </visual>
-      <collision>
-        <geometry><box size="0.015 0.02 0.06"/></geometry>
-      </collision>
-      <xacro:cylinder_inertial mass="0.05" radius="0.01" length="0.06"/>
-    </link>
-
-    <joint name="${prefix}_finger_joint" type="prismatic">
-      <parent link="gripper_base"/>
-      <child link="${prefix}_finger"/>
-      <origin xyz="0 ${reflect*0.03} 0.045" rpy="0 0 0"/>
-      <!-- Mirror the axis per side so both fingers move outward together:
-           position 0 = closed (jaw gap 0.04 m), position 0.03 = open (gap 0.10 m) -->
-      <axis xyz="0 ${reflect} 0"/>
-      <limit lower="0.0" upper="0.03" effort="20" velocity="0.1"/>
-    </joint>
-  </xacro:macro>
-
-  <xacro:finger prefix="left" reflect="1"/>
-  <xacro:finger prefix="right" reflect="-1"/>
-
-  <!-- ============ RGB-D Camera (mounted on gripper_base) ============ -->
+       Consequence is unchanged from before: with the gripper pointing
+       straight down the camera looks straight down too, so scanning for a box
+       or reading a tag needs the arm actually pitched to a scan pose. -->
   <link name="camera_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -481,19 +285,9 @@
   </link>
 
   <joint name="camera_joint" type="fixed">
-    <parent link="gripper_base"/>
+    <parent link="fr3_hand"/>
     <child link="camera_link"/>
-    <!-- Zero rpy: the camera is rigidly aligned with gripper_base, so it
-         always looks exactly along the gripper's own local forward axis:
-         whatever the commanded arm orientation is, that is exactly what the
-         camera sees, with no extra per-camera tilt to compensate for.
-         Consequence: at zdown_quat (gripper pointing straight down, used for
-         grasp/carry/place) the camera looks purely horizontal, not downward,
-         so it cannot see anything below the gripper in that orientation.
-         Reading a tag or scanning for a box therefore needs the arm actually
-         pitched forward-down (scan_quat), not zdown; see SCAN_PITCH-style
-         constants in pick_and_place.py/search_and_pick.py/mission_2.py. -->
-    <origin xyz="0.04 0 0.01" rpy="0 0 0"/>
+    <origin xyz="0.055 0 0.04" rpy="0 -1.5708 0"/>
   </joint>
 
   <link name="camera_optical_link"/>
@@ -503,7 +297,7 @@
     <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
   </joint>
 
-  <!-- ============ Gazebo Harmonic integration (only when simulating) ============ -->
+  <!-- ============ Gazebo Harmonic integration (only when simulating) ====== -->
   <xacro:if value="$(arg use_gazebo)">
     <xacro:include filename="$(find pickplace_arm_description)/urdf/pickplace_arm.gazebo.xacro"/>
   </xacro:if>

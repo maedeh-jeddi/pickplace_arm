@@ -1,63 +1,105 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <!-- ros2_control system for Gazebo Harmonic -->
+  <!-- ros2_control system for Gazebo Harmonic.
+
+       This is the ONLY ros2_control system in the description. The Husky A200
+       is included with use_platform_controllers:=false and is_sim:=false so
+       Clearpath contributes no ros2_control block and no ign_ros2_control
+       plugin, and the FR3 is included with ros2_control:=false and
+       gazebo:=false for the same reason. Everything is driven from here. -->
   <ros2_control name="pickplace_arm_system" type="system">
     <hardware>
       <plugin>gz_ros2_control/GazeboSimSystem</plugin>
     </hardware>
-    <joint name="joint1">
-      <command_interface name="position"/>
-      <state_interface name="position"/>
-      <state_interface name="velocity"/>
-    </joint>
-    <!-- initial_value makes the arm SPAWN in the gripper-DOWN "claw ready" pose
-         (matches HOME_CONFIG in pick_and_place.py): j1 0, j2 0.52, j3 1.14,
-         j4 -3.14, j5 -1.48, j6 0. The gripper points straight down, reaching
-         ~0.38 m ahead, so it can descend straight onto a box driven under it. -->
-    <joint name="joint2">
+
+    <!-- FR3 arm. initial_value spawns the arm in Franka's own "ready" pose
+         (joint2 -pi/4, joint4 -3pi/4, joint6 pi/2, joint7 pi/4): elbow bent,
+         well clear of the shoulder singularity and of the Husky's top plate.
+
+         This REPLACES the old gripper-down "claw ready" spawn pose, whose
+         joint values were derived for the 6-DOF placeholder arm on the old
+         0.08 m-tall chassis and are meaningless for a 7-DOF FR3 mounted
+         0.384 m up. The mission-side HOME_CONFIG still needs re-deriving
+         against this arm (see pick_and_place.py). -->
+    <joint name="fr3_joint1">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">0.52</param>
+        <param name="initial_value">0.0</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="joint3">
+    <joint name="fr3_joint2">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">1.14</param>
+        <param name="initial_value">-0.7854</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="joint4">
+    <joint name="fr3_joint3">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">-3.14</param>
+        <param name="initial_value">0.0</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="joint5">
+    <joint name="fr3_joint4">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">-1.48</param>
+        <param name="initial_value">-2.3562</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="joint6">
+    <joint name="fr3_joint5">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="left_finger_joint">
+    <joint name="fr3_joint6">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">1.5708</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="right_finger_joint">
+    <joint name="fr3_joint7">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.7854</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
+
+    <!-- Franka Hand. Only finger_joint1 is commanded; finger_joint2 carries a
+         <mimic> tag in franka_description's URDF and is reproduced here with
+         gz_ros2_control's own mimic parameters (it reads `mimic`/`multiplier`
+         from these <param> tags, NOT from the URDF <mimic> element - see
+         gz_system.cpp). It must still be declared in this block, or the
+         plugin throws "Mimicked joint not found"; but it must NOT be listed
+         in any controller's joint list, or two controllers fight over it. -->
+    <joint name="fr3_finger_joint1">
+      <command_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.04</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="fr3_finger_joint2">
+      <param name="mimic">fr3_finger_joint1</param>
+      <param name="multiplier">1.0</param>
+      <command_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.04</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <!-- Husky A200 wheels. The A200 macro names its wheel joints exactly the
+         same as the old placeholder base did, so diff_drive_controller's
+         joint lists carry over unchanged (its wheel_separation/wheel_radius
+         do NOT - see config/arm_controllers.yaml). -->
     <joint name="front_left_wheel_joint">
       <command_interface name="velocity"/>
       <state_interface name="position"/>
@@ -101,30 +143,27 @@
        VERIFIED by the finger gap before anything attaches (see grab_below),
        so this makes a confirmed grasp hold; it does not fake one.
 
-       parent_link is link6, NOT gripper_base, even though gripper_base is the
-       link every grasp pose is expressed in. Gazebo's URDF importer MERGES
-       links joined by fixed joints into their parent, so gripper_base does not
-       survive into the spawned SDF at all and naming it here fails the plugin
-       outright ("Link with name [gripper_base] not found in model
-       [pickplace_arm]. Failed to initialize."), silently leaving the box on
-       friction. link6 is what gripper_base was merged INTO, so it is the same
-       rigid body. Only links with a non-fixed joint (or a sensor) survive: to
-       check, run `gz model -m pickplace_arm` against a live sim and read the
-       link list. Verified empirically: attach/detach both work on link6.
+       parent_link is fr3_link7, NOT fr3_hand, for the same reason it used to
+       be link6 rather than gripper_base: Gazebo's URDF importer MERGES links
+       joined by fixed joints into their parent, so fr3_hand (fixed to
+       fr3_link8, itself fixed to fr3_link7) does not survive into the spawned
+       SDF and naming it here fails the plugin outright ("Link with name
+       [fr3_hand] not found in model [pickplace_arm]. Failed to initialize."),
+       silently leaving the box on friction. fr3_link7 is the nearest ancestor
+       reached through a non-fixed joint (fr3_joint7), so it is the rigid body
+       fr3_hand was merged INTO. To confirm against a live sim, run
+       `gz model -m pickplace_arm` and read the link list.
 
        Each box IS welded the moment it spawns, with no attach requested:
        the plugin creates its joint as soon as the child model appears.
-       Verified by driving the base right after launch with nothing published,
-       and watching every box track the robot exactly (0.301 m for 0.301 m).
        That makes the startup detach in PickAndPlace.__init__ load-bearing,
        NOT a nicety: without it the robot tows all three boxes off the table
-       the moment it drives to the pick. Nothing moves between the box spawn
-       and the mission node starting, so issuing it there is soon enough. -->
+       the moment it drives to the pick. -->
   <xacro:macro name="box_attach" params="color">
     <gazebo>
       <plugin filename="gz-sim-detachable-joint-system"
               name="gz::sim::systems::DetachableJoint">
-        <parent_link>link6</parent_link>
+        <parent_link>fr3_link7</parent_link>
         <child_model>box_${color}</child_model>
         <child_link>link</child_link>
         <attach_topic>/box_${color}/attach</attach_topic>
@@ -144,8 +183,10 @@
        slipped out of a good grasp during the lift/carry in the heavier Ionic
        world: under higher physics load the friction hold was marginal, so the
        box occasionally pivoted free mid-carry. The box's mu was the lower
-       (limiting) of the two contacting surfaces, so both were raised. -->
-  <gazebo reference="left_finger">
+       (limiting) of the two contacting surfaces, so both were raised.
+       (franka_description sets its own mu=1.13 on these links, but only when
+       built with gazebo:=true, which this description does not do.) -->
+  <gazebo reference="fr3_leftfinger">
     <mu1>5.0</mu1>
     <mu2>5.0</mu2>
     <kp>1e6</kp>
@@ -153,7 +194,7 @@
     <minDepth>0.001</minDepth>
     <maxVel>0.0</maxVel>
   </gazebo>
-  <gazebo reference="right_finger">
+  <gazebo reference="fr3_rightfinger">
     <mu1>5.0</mu1>
     <mu2>5.0</mu2>
     <kp>1e6</kp>
@@ -163,7 +204,7 @@
   </gazebo>
 
   <!-- Wheel ground contact friction, enough traction to drive/skid-steer
-       without excessive slip. -->
+       without excessive slip. Link names come from the A200 macro. -->
   <xacro:macro name="wheel_friction" params="link">
     <gazebo reference="${link}">
       <mu1>1.0</mu1>
@@ -178,7 +219,9 @@
   <xacro:wheel_friction link="rear_left_wheel"/>
   <xacro:wheel_friction link="rear_right_wheel"/>
 
-  <!-- RGB-D Camera sensor (Gazebo Harmonic) -->
+  <!-- Wrist RGB-D camera sensor (Gazebo Harmonic). camera_link is fixed to
+       fr3_hand but survives the URDF->SDF fixed-joint merge because it
+       carries a sensor. -->
   <gazebo reference="camera_link">
     <sensor name="rgbd_camera" type="rgbd_camera">
       <topic>/camera</topic>
@@ -217,8 +260,10 @@
         <scan>
           <!-- 270 deg forward arc (-135..+135 deg); the excluded 90 deg
                wedge points straight back at the arm, so the scan never hits
-               it. 270 samples keeps the same ~1 deg/sample resolution as a
-               360-sample full circle. -->
+               it. With the FR3 at x=0.0799 and this sensor at x=0.4449 the
+               arm subtends only ~+/-21 deg about the 180 deg bearing, well
+               inside the wedge. 270 samples keeps the same ~1 deg/sample
+               resolution as a 360-sample full circle. -->
           <horizontal>
             <samples>270</samples>
             <resolution>1</resolution>

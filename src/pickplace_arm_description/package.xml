@@ -2,10 +2,16 @@
 <package format="3">
   <name>pickplace_arm_description</name>
   <version>0.0.1</version>
-  <description>URDF/Xacro description for 6DOF pick and place robotic arm</description>
+  <description>URDF/Xacro description for a mobile manipulator: Clearpath Husky A200 base with a Franka FR3 arm and Franka Hand gripper</description>
   <maintainer email="maedehjeddi1993@gmail.com">Maedeh Jeddi</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Base and arm descriptions are referenced via $(find ...) at xacro time,
+       so they are runtime (exec) dependencies, not build ones. -->
+  <exec_depend>clearpath_platform_description</exec_depend>
+  <exec_depend>franka_description</exec_depend>
+
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>joint_state_publisher_gui</exec_depend>
   <exec_depend>xacro</exec_depend>
