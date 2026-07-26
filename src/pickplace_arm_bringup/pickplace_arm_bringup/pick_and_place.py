@@ -125,11 +125,11 @@ MAX_GRASP_ATTEMPTS = 3
 # mobile base drives to the delivery point.
 #
 # Re-derived. Two clearances drive it, both re-checked for this robot:
-#   * LIDAR: it now sits at base_link (0.4449, 0, 0.2714), i.e. its horizontal
-#     scan plane is 0.4037 m above the floor. The carried box rides at 0.65 m,
-#     so its underside (0.62) clears that plane by ~0.22 m and cannot be
-#     self-detected as an obstacle dead ahead (the failure the old 0.18->0.30
-#     tuning chain was chasing).
+#   * LIDAR: modelled as a real SICK TiM5xx standing on the top plate, its
+#     laser centre is 0.4396 m above the floor. The carried box rides at
+#     0.65 m, so its underside (0.62) clears the scan plane by ~0.18 m and
+#     cannot be self-detected as an obstacle dead ahead (the failure the old
+#     0.18->0.30 tuning chain was chasing).
 #   * FRONT CAMERA: at base_link x=0.5087. Holding the box at x=0.50 keeps it
 #     just BEHIND the camera plane, so it never occludes the column search on
 #     the drive over.

@@ -25,6 +25,9 @@ def generate_launch_description():
     gz_resource_paths = [
         os.path.dirname(get_package_share_directory('clearpath_platform_description')),
         os.path.dirname(get_package_share_directory('franka_description')),
+        # Sensor meshes: RealSense D435/D405 and the SICK TiM5xx lidar.
+        os.path.dirname(get_package_share_directory('realsense2_description')),
+        os.path.dirname(get_package_share_directory('sick_scan_xd')),
     ]
 
     xacro_file = os.path.join(pkg_description, 'urdf', 'pickplace_arm.urdf.xacro')

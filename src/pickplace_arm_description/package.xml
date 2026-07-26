@@ -11,6 +11,9 @@
        so they are runtime (exec) dependencies, not build ones. -->
   <exec_depend>clearpath_platform_description</exec_depend>
   <exec_depend>franka_description</exec_depend>
+  <!-- Sensor meshes: RealSense D435 (front) / D405 (wrist), SICK TiM5xx lidar -->
+  <exec_depend>realsense2_description</exec_depend>
+  <exec_depend>sick_scan_xd</exec_depend>
 
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>joint_state_publisher_gui</exec_depend>

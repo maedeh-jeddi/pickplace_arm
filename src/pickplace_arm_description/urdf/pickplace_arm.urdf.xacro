@@ -187,22 +187,47 @@
        the old placeholder chassis. It now scans well above low obstacles,
        so any ground-level box that SLAM/Nav2 used to see in the scan will no
        longer appear. -->
+  <!-- Modelled as a SICK TiM5xx (TiM571): a real 270 deg, single-plane scanner
+       whose datasheet geometry is what the sensor config above already
+       describes. Mesh referenced out of sick_scan_xd, not copied.
+
+       SICK's own URDF convention (sick_scan_xd/urdf/sick_scan.urdf.xacro):
+       the mesh is in METRES and its origin IS the laser centre, placed on the
+       link with no offset - so lidar_link sits exactly where the beams
+       originate, and the device body hangs around it. The body is 0.06 x 0.06
+       x 0.079 with the laser centre 0.05595 above its base plate, which is
+       what the mount joint below uses to stand it on the top plate. -->
   <link name="lidar_link">
     <visual>
-      <geometry><cylinder radius="0.03" length="0.04"/></geometry>
+      <geometry><mesh filename="package://sick_scan_xd/meshes/sick_tim_5xx.stl"/></geometry>
       <material name="arm_grey"/>
     </visual>
+    <!-- Collision is a PRIMITIVE, not the mesh, even though SICK's own URDF
+         reuses the mesh for both. A detailed triangle mesh is far more
+         expensive to collide than a box, and this housing never needs accurate
+         contact - it just has to exist. Using the mesh here measurably hurt:
+         the startup clock-jump count went from 0 to 1903 as the physics step
+         slowed. Box = the device envelope (0.06 x 0.06 x 0.079), centred
+         -0.01645 below the laser centre since the mesh origin IS that centre
+         and the body runs -0.05595..+0.02305 around it. -->
     <collision>
-      <geometry><cylinder radius="0.03" length="0.04"/></geometry>
+      <origin xyz="0 0 -0.01645" rpy="0 0 0"/>
+      <geometry><box size="0.06 0.06 0.079"/></geometry>
     </collision>
-    <xacro:cylinder_inertial mass="0.1" radius="0.03" length="0.04"/>
+    <xacro:cylinder_inertial mass="0.15" radius="0.03" length="0.079"/>
   </link>
 
   <joint name="lidar_joint" type="fixed">
     <parent link="top_plate_front_mount"/>
     <child link="lidar_link"/>
-    <!-- +z half the sensor body so it rests ON the plate, not half-sunk. -->
-    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+    <!-- Stand the real device ON the plate: its base plate is 0.05595 below
+         the laser centre, and lidar_link IS the laser centre. This raises the
+         scan plane from 0.4037 to 0.4396 m above the floor (+0.036) versus the
+         placeholder cylinder - the price of modelling the actual sensor rather
+         than a puck. Nothing depends on the old value: warehouse walls span
+         the full height either way, and the carried box still rides 0.18 m
+         clear above the plane. -->
+    <origin xyz="0 0 0.05595" rpy="0 0 0"/>
   </joint>
 
   <!-- IMU: its yaw is fused with the wheel odometry (robot_localization EKF)
@@ -226,17 +251,32 @@
        (base_link 0.406, 0, 0.091). Pushed forward to clear the chassis front
        face (at x=0.4937) and raised to look over the bumper line. Detects the
        box ahead while the base drives. -->
+  <!-- Modelled as an Intel RealSense D435 (87 deg HFOV, 0.05-10 m), the closest
+       real part to the 90 deg / 8 m sensor configured for it. Mesh referenced
+       out of realsense2_description, not copied.
+
+       Offsets copied from Intel's own _d435.urdf.xacro so the body sits
+       correctly around the frame: there, `<name>_link` is the DEPTH frame with
+       x forward - exactly the role front_camera_link plays here - and the mesh
+       is hung off it at (zero_depth_to_glass + glass_to_front, -cam_depth_py,
+       0) = (0.0043, -0.0175, 0) with rpy (pi/2, 0, pi/2). The -0.0175 y shift
+       is real: a D435's depth imager is not centred on its body, so the
+       housing renders offset from the optical axis. d435.dae is already in
+       metres (its COLLADA <unit> is 1.0), so no scale is applied.
+
+       front_camera_link itself has NOT moved - it stays at base_link
+       (0.5087, 0, 0.20), i.e. FRONT_CAM_Z = 0.332 m - because every detection
+       gate and the measured near-face bias are expressed against it. -->
   <link name="front_camera_link">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><box size="0.03 0.06 0.03"/></geometry>
-      <material name="arm_dark"/>
+      <origin xyz="0.0043 -0.0175 0" rpy="${PI/2} 0 ${PI/2}"/>
+      <geometry><mesh filename="package://realsense2_description/meshes/d435.dae"/></geometry>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><box size="0.03 0.06 0.03"/></geometry>
+      <origin xyz="0 -0.0175 0" rpy="0 0 0"/>
+      <geometry><box size="0.02505 0.090 0.025"/></geometry>
     </collision>
-    <xacro:cylinder_inertial mass="0.05" radius="0.02" length="0.03"/>
+    <xacro:cylinder_inertial mass="0.072" radius="0.02" length="0.025"/>
   </link>
 
   <joint name="front_camera_joint" type="fixed">
@@ -271,23 +311,42 @@
        Consequence is unchanged from before: with the gripper pointing
        straight down the camera looks straight down too, so scanning for a box
        or reading a tag needs the arm actually pitched to a scan pose. -->
+  <!-- Modelled as an Intel RealSense D405: the short-range part of the family,
+       built for exactly this eye-in-hand job (60 deg HFOV, useful from a few
+       mm out), which matches the 60 deg / 0.05-5 m sensor configured for it.
+       Mesh referenced out of realsense2_description, not copied.
+
+       Offsets copied from Intel's _d405.urdf.xacro, same convention as the
+       D435 above: mesh at (zero_depth_to_glass + glass_to_front, -cam_depth_py,
+       0) = (0.0038, -0.009, 0), rpy (pi/2, 0, pi/2). Unlike d435.dae, d405.stl
+       is authored in MILLIMETRES, so it needs the 0.001 scale Intel applies. -->
   <link name="camera_link">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><box size="0.03 0.03 0.02"/></geometry>
+      <origin xyz="0.0038 -0.009 0" rpy="${PI/2} 0 ${PI/2}"/>
+      <geometry>
+        <mesh filename="package://realsense2_description/meshes/d405.stl"
+              scale="0.001 0.001 0.001"/>
+      </geometry>
       <material name="arm_dark"/>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><box size="0.03 0.03 0.02"/></geometry>
+      <origin xyz="-0.0078 -0.009 0" rpy="0 0 0"/>
+      <geometry><box size="0.023 0.042 0.042"/></geometry>
     </collision>
-    <xacro:cylinder_inertial mass="0.05" radius="0.015" length="0.02"/>
+    <xacro:cylinder_inertial mass="0.045" radius="0.021" length="0.023"/>
   </link>
 
   <joint name="camera_joint" type="fixed">
     <parent link="fr3_hand"/>
     <child link="camera_link"/>
-    <origin xyz="0.055 0 0.04" rpy="0 -1.5708 0"/>
+    <!-- Moved out 0.055 -> 0.068 along the hand's x. The real D405 is 42 mm
+         square where the placeholder box was 30x20, and fr3_hand's collision
+         capsule has a 0.04 m radius about the hand axis - at 0.055 the real
+         body would visibly clip into the hand. 0.068 puts its nearest face
+         0.047 m off the axis, clear of the capsule, without touching the
+         approach-axis alignment (this offset is perpendicular to the view
+         direction, and detection transforms through TF regardless). -->
+    <origin xyz="0.068 0 0.04" rpy="0 -1.5708 0"/>
   </joint>
 
   <link name="camera_optical_link"/>
