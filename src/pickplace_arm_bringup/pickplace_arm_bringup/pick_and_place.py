@@ -88,10 +88,18 @@ BOX_SIZE = 0.06
 # origin, which sits wheel_radius - wheel_vertical_offset = 0.1651 - 0.03282
 # above the floor. (Was -0.05 on the placeholder base.)
 GROUND_Z = -0.13228
-# Front camera height above the FLOOR (front_camera_link is at base_link z=0.20).
-# Detection gates are expressed in the CAMERA frame, so converting a known
-# world height into a gate bound needs this.
-FRONT_CAM_Z = 0.20 - GROUND_Z          # 0.33228 m above the floor
+# Front camera height above the FLOOR (front_camera_link is at base_link
+# z=0.091). Detection gates are expressed in the CAMERA frame, so converting a
+# known world height into a gate bound needs this.
+#
+# WAS 0.20 (= 0.33228 above the floor), when the camera hung unsupported 83 mm
+# in front of the chassis and 86 mm above the top of its front panel. It is now
+# bolted flat onto that panel, on the A200's own front_bumper_mount frame, so
+# the lens dropped to base_link z=0.091 -- see front_camera_joint in
+# pickplace_arm.urdf.xacro for the measured panel geometry. Every camera-frame
+# gate z band in this package was shifted +0.109 to keep covering the same
+# WORLD heights it covered before.
+FRONT_CAM_Z = 0.091 - GROUND_Z         # 0.22328 m above the floor
 PLACE_XY = (0.70, 0.25)
 GRASP_Z = GROUND_Z + BOX_SIZE / 2.0   # fingertip z when grasping a ground box
 APPROACH_Z = GRASP_Z + 0.15           # pre-grasp / lift height
@@ -126,13 +134,16 @@ MAX_GRASP_ATTEMPTS = 3
 #
 # Re-derived. Two clearances drive it, both re-checked for this robot:
 #   * LIDAR: modelled as a real SICK TiM5xx standing on the top plate, its
-#     laser centre is 0.4396 m above the floor. The carried box rides at
-#     0.65 m, so its underside (0.62) clears the scan plane by ~0.18 m and
+#     laser centre is 0.4466 m above the floor. The carried box rides at
+#     0.65 m, so its underside (0.62) clears the scan plane by ~0.17 m and
 #     cannot be self-detected as an obstacle dead ahead (the failure the old
 #     0.18->0.30 tuning chain was chasing).
-#   * FRONT CAMERA: at base_link x=0.5087. Holding the box at x=0.50 keeps it
-#     just BEHIND the camera plane, so it never occludes the column search on
-#     the drive over.
+#   * FRONT CAMERA: at base_link (0.425, 0.091). The box at x=0.50 is now
+#     AHEAD of the lens rather than behind it, but it still cannot occlude the
+#     column search, for a stronger reason than before: it rides 0.40 m above
+#     the lens at only 0.045 m of forward separation, i.e. ~84 deg up, where
+#     the camera's 73.7 deg vertical cone spans just z 0.057..0.125 in
+#     base_link. The whole box sits far outside the frustum.
 # Seeded IK from the post-lift state reaches it in one smooth step (0.81 rad,
 # no branch flip), so the strict carry move has a same-branch solution.
 CARRY_POSITION = (0.50, 0.00, GROUND_Z + 0.65)
@@ -157,11 +168,12 @@ HOME_CONFIG = [0.0, 0.5012, 0.0, -1.9509, 0.0, 2.452, 0.7854]
 #   1. CLEAR OF THE ROBOT. The Husky chassis ends at x=0.4937, so anything the
 #      gripper descends onto must be beyond that or the arm drives into its own
 #      top plate. 0.70 leaves 0.21 m of clearance.
-#   2. IN FRONT OF THE CAMERA. front_camera_link is at x=0.5087; the claw point
-#      must be ahead of it to be seen at all. 0.70 puts the target 0.19 m ahead
+#   2. IN FRONT OF THE CAMERA. front_camera_link is at x=0.425; the claw point
+#      must be ahead of it to be seen at all. 0.70 puts the target 0.275 m ahead
 #      of the lens - past its 0.05 m near clip, and at that range its 73.7 deg
-#      vertical FOV spans floor heights 0.19..0.48, which brackets the 0.30 m
-#      table top and the boxes standing on it.
+#      vertical FOV spans floor heights 0.02..0.43, which brackets the 0.30 m
+#      table top and the boxes standing on it (top at 0.36). The lower lens
+#      buys MORE range here, not less: the old mount saw 0.19..0.48 at 0.19 m.
 #   3. COMFORTABLY REACHABLE. 0.62 m from the arm base, i.e. 73% of the FR3's
 #      0.855 m reach, so it is nowhere near the singular edge.
 # READY_Z holds the fingertips 0.50 m up: high enough to clear the 0.36 m box

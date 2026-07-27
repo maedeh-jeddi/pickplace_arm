@@ -116,8 +116,8 @@ FINAL_POSE = (0.0, -1.8, 0.0)
 # its near face would be at 0.42-0.10 = 0.32 - i.e. Nav2 would be asked to park
 # with the bumper 0.17 m INSIDE the column. 1.10 leaves 0.51 m of bumper
 # clearance, keeps the whole column inside the front camera's cone at arrival
-# (near face 0.49 m ahead of the lens, vertical span 0.0-0.70 m off the floor),
-# and leaves approach_column a 0.35 m visual servo in to the placement stop.
+# (near face 0.575 m ahead of the lens, vertical span floor-0.65 m), and leaves
+# approach_column a 0.35 m visual servo in to the placement stop.
 NAV_STANDOFF = 1.10
 # Stop the approach when the column's front-camera reading reaches this x
 # (mirrors CLAW_STOP_X for the box pick). The camera only sees the column's
@@ -127,7 +127,7 @@ NAV_STANDOFF = 1.10
 # Stopping with the near face at 0.65 puts the column CENTRE at 0.75 - past the
 # bumper (0.4937) with 0.06 m to spare on the near face, comfortably reachable
 # (0.67-0.69 m from the arm base for every column height, ~80% of reach), and
-# still 0.14 m ahead of the camera lens so the column stays in view at the stop
+# still 0.225 m ahead of the camera lens so the column stays in view at the stop
 # rather than falling inside the 0.05 m near clip.
 COLUMN_STOP_X = 0.65
 COLUMN_Y_TOL = 0.025
@@ -206,8 +206,8 @@ class Mission2(Mission):
     # box is released into thin air. When non-zero, place_on_column closes the
     # gap by creeping the BASE forward (see _creep_forward) instead, because
     # the front camera cannot see the column at that range at all (its near
-    # clip is 0.05 m and it sits ~0.205 m ahead of base_link, so anything
-    # nearer than base x~0.26 falls behind the near plane).
+    # clip is 0.05 m and it sits 0.425 m ahead of base_link, so anything
+    # nearer than base x~0.475 falls behind the near plane).
     COLUMN_DEPTH_BIAS = 0.0
     # Where the column should sit (base_link x, m) when the arm actually places,
     # once the creep above has closed the gap. Matches COLUMN_STOP_X +
@@ -524,10 +524,26 @@ class Mission2(Mission):
         (column top + half a box, above the FLOOR) has to be converted by
         subtracting the camera's own height. That conversion is why the old
         bound was wrong for this robot: it assumed a camera ~0.05 m off the
-        floor, and the front camera now sits at FRONT_CAM_Z = 0.332 m, so a
-        correctly-placed box reads ~0.33 m LOWER in camera z than the old
+        floor, and the front camera sits at FRONT_CAM_Z = 0.223 m, so a
+        correctly-placed box reads ~0.22 m LOWER in camera z than the old
         expression predicted -- the gate would have excluded every real
-        placement."""
+        placement. Both bounds are computed from FRONT_CAM_Z, so they follow the
+        lens automatically; nothing here needs touching when it moves.
+
+        WHAT DOES NOT FOLLOW AUTOMATICALLY is whether the box is VISIBLE at all.
+        The box sits centred on a column 0.20 m deep, so it is set back 0.07 m
+        behind the column's near face, and the sight line has to clear that
+        face's top edge. From the lens at base_link (0.425, 0.091), stopping at
+        COLUMN_STOP_X, that grazing ray clears the box only for the SHORT
+        column; the camera also has a 73.7 deg vertical cone that runs out at
+        the same time. Per column height, whether any of the box's near face is
+        both unoccluded and inside the cone:
+            0.30 m  yes, ~36 mm of face      (was yes, whole face)
+            0.40 m  NO, cone runs out ~5 mm short  (was yes, ~26 mm)
+            0.50 m  no                       (was no -- self-occluded either way)
+        So a true placement on the 0.40 m column can now log as FAILED. The fix
+        if that bites is to back the base off ~0.2 m before looking rather than
+        to widen the gate: the gate is not what is rejecting it."""
         log = self.get_logger()
         # The gate must START ABOVE THE COLUMN TOP, not merely near the box.
         # Centring it on the box (+/- a few cm) lets the top slice of the
@@ -666,6 +682,13 @@ class Mission2Ionic(Mission2):
     # the ceiling beams) -- i.e. where a column the robot has driven up to
     # actually is. Verified against the failing frame: the distractor centroid
     # sat at camera (0.76, 0.58, 0.24) -- outside both the y and z bounds.
+    #
+    # NOT shifted with the lens the way TUGBOT_GATE was, deliberately. Its
+    # bounds were fitted to a MEASURED distractor in camera coordinates, and
+    # sliding the upper bound up by 0.109 would readmit that 0.24 ceiling beam.
+    # Left as-is, the band now maps to world heights 0.02..0.42 (lens at
+    # FRONT_CAM_Z = 0.223) instead of 0.13..0.53, which suits this world's short
+    # 0.08/0.12/0.16 m columns better than the old mount did.
     COLUMN_DETECT_GATE = (0.05, 0.9, -0.35, 0.35, -0.2, 0.2)
     # The two SHORTER columns keep the warehouse-default stop (0.36) and
     # clearance (0.21) -- they place to <5 mm here, and approaching them closer
@@ -699,15 +722,18 @@ class Mission2Tugbot(Mission2):
     Mission2Ionic uses for its navy-blue-walls problem."""
     # Camera-frame gate (X-forward, Y-left, Z-up, metres) that rejects this
     # world's same-coloured clutter. Re-derived for the scaled-up props AND the
-    # new camera height: the gate's z bounds are relative to the LENS, which now
-    # sits FRONT_CAM_Z = 0.332 m off the floor, so a world height converts as
-    # (height - 0.332). The targets that must stay inside it:
-    #   box on the 0.30 m table, centre 0.33  ->  cam z ~ -0.00
-    #   column bodies, floor 0.00 to 0.50     ->  cam z -0.33 .. +0.17
-    # The old (-0.15, 0.30) band was derived when the lens was near floor level;
-    # against this camera it would have cut off every column below its top few
+    # camera height: the gate's z bounds are relative to the LENS, which sits
+    # FRONT_CAM_Z = 0.223 m off the floor, so a world height converts as
+    # (height - 0.223). The targets that must stay inside it:
+    #   box on the 0.30 m table, centre 0.33  ->  cam z ~ +0.11
+    #   column bodies, floor 0.00 to 0.50     ->  cam z -0.22 .. +0.28
+    # The band was (-0.36, 0.25) while the lens hung at 0.332; both bounds moved
+    # +0.109 with it when the camera was seated on the chassis front panel, so
+    # the WORLD slice this admits (-0.03 .. 0.58 m off the floor) is unchanged.
+    # Before either, (-0.15, 0.30) was derived when the lens was near floor
+    # level; against this camera it would cut off every column below its top few
     # centimetres and the table boxes with it.
-    TUGBOT_GATE = (0.05, 2.5, -0.7, 0.7, -0.36, 0.25)
+    TUGBOT_GATE = (0.05, 2.5, -0.7, 0.7, -0.25, 0.36)
     COLUMN_DETECT_GATE = TUGBOT_GATE
     # Column 0 (short, 8cm) landed a measured 0.19 m short of the column
     # (box at world x=-0.81 vs the column's -1.0) despite "PLACE: DONE" --

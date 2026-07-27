@@ -33,7 +33,11 @@ TURN_TIMEOUT_SEC = 20.0
 # Gate detections to where the box/column actually are: ahead, close, and
 # near table/gripper height. See mission.py's `_detect` docstring for the
 # same technique already used for the Ionic world's column detection.
-DEMO_GATE = (0.05, 2.0, -0.6, 0.6, -0.15, 0.25)
+#
+# The z bounds are relative to the LENS, so they moved +0.109 with it when the
+# front camera was seated on the chassis front panel (FRONT_CAM_Z 0.332 ->
+# 0.223); the WORLD slice admitted, 0.18..0.58 m off the floor, is unchanged.
+DEMO_GATE = (0.05, 2.0, -0.6, 0.6, -0.04, 0.36)
 
 
 class TugbotDemo(Mission2):

@@ -179,11 +179,11 @@
        On the front of the top plate. The 270 deg forward arc configured in
        pickplace_arm.gazebo.xacro excludes a 90 deg wedge pointing straight
        BACK, which is exactly where the arm stands: the FR3 base is at
-       x=0.07987 and the LIDAR at x=0.44487, so the arm sits 0.365 m directly
-       behind the sensor and subtends only ~+/-21 deg there -comfortably
+       x=0.07987 and the LIDAR at x=0.40687, so the arm sits 0.327 m directly
+       behind the sensor and subtends only ~+/-15 deg there -comfortably
        inside the excluded 135..225 deg wedge, so the scan never hits it.
 
-       HEIGHT CHANGED: this sits 0.403 m above the ground, against 0.11 m on
+       HEIGHT CHANGED: this sits 0.447 m above the ground, against 0.11 m on
        the old placeholder chassis. It now scans well above low obstacles,
        so any ground-level box that SLAM/Nav2 used to see in the scan will no
        longer appear. -->
@@ -194,9 +194,18 @@
        SICK's own URDF convention (sick_scan_xd/urdf/sick_scan.urdf.xacro):
        the mesh is in METRES and its origin IS the laser centre, placed on the
        link with no offset - so lidar_link sits exactly where the beams
-       originate, and the device body hangs around it. The body is 0.06 x 0.06
-       x 0.079 with the laser centre 0.05595 above its base plate, which is
-       what the mount joint below uses to stand it on the top plate. -->
+       originate, and the device body hangs around it.
+
+       All the mount numbers below are MEASURED OFF THE MESH, not taken from
+       SICK's macro args. Those args (0.06 x 0.06 x 0.079 body, laser centre
+       0.05595 above the base plate) do NOT describe sick_tim_5xx.stl: the
+       actual mesh envelope about the laser centre is
+           x -0.04729 .. +0.02903   (0.0763 - the rear cable boss overhangs)
+           y -0.03070 .. +0.03007   (0.0608)
+           z -0.06296 .. +0.02290   (0.0859)
+       i.e. the base plate is 0.06296 below the laser centre, not 0.05595.
+       Standing the device on SICK's number sank the housing 7 mm INTO the top
+       plate, which is what this joint's z now corrects. -->
   <link name="lidar_link">
     <visual>
       <geometry><mesh filename="package://sick_scan_xd/meshes/sick_tim_5xx.stl"/></geometry>
@@ -207,27 +216,42 @@
          expensive to collide than a box, and this housing never needs accurate
          contact - it just has to exist. Using the mesh here measurably hurt:
          the startup clock-jump count went from 0 to 1903 as the physics step
-         slowed. Box = the device envelope (0.06 x 0.06 x 0.079), centred
-         -0.01645 below the laser centre since the mesh origin IS that centre
-         and the body runs -0.05595..+0.02305 around it. -->
+         slowed. Box = the MEASURED mesh envelope above (0.0763 x 0.0608 x
+         0.0859), centred on that envelope's centre relative to the laser
+         centre. The previous box used SICK's declared 0.06 x 0.06 x 0.079
+         instead, which left its floor 7 mm above the real base plate - so the
+         collision model hovered while the visual stood on the plate. -->
     <collision>
-      <origin xyz="0 0 -0.01645" rpy="0 0 0"/>
-      <geometry><box size="0.06 0.06 0.079"/></geometry>
+      <origin xyz="-0.00913 0 -0.02003" rpy="0 0 0"/>
+      <geometry><box size="0.0763 0.0608 0.0859"/></geometry>
     </collision>
-    <xacro:cylinder_inertial mass="0.15" radius="0.03" length="0.079"/>
+    <xacro:cylinder_inertial mass="0.15" radius="0.03" length="0.0859"/>
   </link>
 
   <joint name="lidar_joint" type="fixed">
     <parent link="top_plate_front_mount"/>
     <child link="lidar_link"/>
-    <!-- Stand the real device ON the plate: its base plate is 0.05595 below
-         the laser centre, and lidar_link IS the laser centre. This raises the
-         scan plane from 0.4037 to 0.4396 m above the floor (+0.036) versus the
-         placeholder cylinder - the price of modelling the actual sensor rather
-         than a puck. Nothing depends on the old value: warehouse walls span
-         the full height either way, and the carried box still rides 0.18 m
-         clear above the plane. -->
-    <origin xyz="0 0 0.05595" rpy="0 0 0"/>
+    <!-- Stand the real device ON the plate, fully INBOARD of its front edge.
+         Two corrections, both against the measured mesh envelope above:
+
+         z = +0.06296 (not SICK's 0.05595). lidar_link IS the laser centre and
+         the mesh's base plate is 0.06296 below it, so this puts the housing's
+         floor on the plate's upper surface (0.25135 in base_link) to within
+         0.1 mm. The old value buried the bottom 7 mm of the housing in the
+         plate. Scan plane: 0.4467 m above the floor, up from 0.4396.
+
+         x = -0.038. top_plate_front_mount sits at top_plate_link x=0.44487 but
+         the plate's front EDGE is at 0.4462 - only 1.3 mm further forward -
+         while the mesh reaches 0.02903 ahead of the laser centre. Mounted with
+         no x offset, 27.7 mm of the scanner hung off the front of the plate in
+         mid-air. Pulling it back 38 mm puts its front face at 0.4359, i.e.
+         10.3 mm inboard of the edge, with the whole footprint on the plate.
+
+         Neither change costs anything downstream: warehouse walls span the
+         full height either way, the carried box still rides 0.17 m clear above
+         the scan plane, and the arm stays deep inside the excluded rear wedge
+         (see above). -->
+    <origin xyz="-0.038 0 0.06296" rpy="0 0 0"/>
   </joint>
 
   <!-- IMU: its yaw is fused with the wheel odometry (robot_localization EKF)
@@ -247,10 +271,15 @@
     <origin xyz="0 0 0.12" rpy="0 0 0"/>
   </joint>
 
-  <!-- Front-facing RGB-D camera, on the A200's own front_bumper_mount frame
-       (base_link 0.406, 0, 0.091). Pushed forward to clear the chassis front
-       face (at x=0.4937) and raised to look over the bumper line. Detects the
-       box ahead while the base drives. -->
+  <!-- Front-facing RGB-D camera, BOLTED FLAT onto the Husky's front panel via
+       the A200's own front_bumper_mount frame (base_link 0.406, 0, 0.091).
+       Detects the box ahead while the base drives.
+
+       The panel it sits on, measured off base_link.dae: a flat vertical face
+       at x=0.4044 spanning z 0.043..0.114 (above and below that the shell
+       curves away). front_bumper_mount is 1.6 mm proud of it at z=0.091, i.e.
+       squarely in the middle of the flat region - so mounting with no z offset
+       puts the camera body at z 0.0785..0.1035, entirely on the panel. -->
   <!-- Modelled as an Intel RealSense D435 (87 deg HFOV, 0.05-10 m), the closest
        real part to the 90 deg / 8 m sensor configured for it. Mesh referenced
        out of realsense2_description, not copied.
@@ -264,16 +293,31 @@
        housing renders offset from the optical axis. d435.dae is already in
        metres (its COLLADA <unit> is 1.0), so no scale is applied.
 
-       front_camera_link itself has NOT moved - it stays at base_link
-       (0.5087, 0, 0.20), i.e. FRONT_CAM_Z = 0.332 m - because every detection
-       gate and the measured near-face bias are expressed against it. -->
+       That mesh + origin + rpy resolve to a body occupying, in this link's
+       frame, x -0.02075..+0.0043, y -0.06241..+0.0275, z -0.0125..+0.0125:
+       the back face is 20.75 mm BEHIND the link and the front glass 4.3 mm
+       ahead of it. Those two numbers are what the mount joint's x is set from.
+
+       THE MATERIAL IS NOT COSMETIC. d435.dae carries exactly one material - a
+       lambert with diffuse 0.749 grey and no ambient/specular - and with no
+       <material> here that is what Gazebo renders, which under the sim's
+       lighting reads as a plain WHITE block. An explicit URDF material is
+       converted into an SDF <material> that overrides the mesh's own, so this
+       is what makes the housing look like the dark camera it is, matching the
+       wrist D405 below. -->
   <link name="front_camera_link">
     <visual>
       <origin xyz="0.0043 -0.0175 0" rpy="${PI/2} 0 ${PI/2}"/>
       <geometry><mesh filename="package://realsense2_description/meshes/d435.dae"/></geometry>
+      <material name="arm_dark"/>
     </visual>
+    <!-- Box = the mesh envelope above. Its x origin was 0, which centred the
+         box on the link and so pushed its back face 12.5 mm behind the real
+         housing - harmless while the camera floated in mid-air, but now that
+         the housing is flush against the panel that phantom 8 mm would sit
+         inside the chassis. -0.00823 is the true envelope centre. -->
     <collision>
-      <origin xyz="0 -0.0175 0" rpy="0 0 0"/>
+      <origin xyz="-0.00823 -0.0175 0" rpy="0 0 0"/>
       <geometry><box size="0.02505 0.090 0.025"/></geometry>
     </collision>
     <xacro:cylinder_inertial mass="0.072" radius="0.02" length="0.025"/>
@@ -284,9 +328,25 @@
     <child link="front_camera_link"/>
     <!-- Zero rpy: the camera is rigidly aligned with base_link, so it always
          points exactly along the chassis's own forward direction, with no
-         extra tilt to account for. Resolves to base_link (0.5087, 0, 0.20),
-         i.e. 0.332 m above the ground on the chassis's front face. -->
-    <origin xyz="0.1027 0 0.109" rpy="0 0 0"/>
+         extra tilt to account for. THE CAMERA-FRAME DETECTION GATES DEPEND ON
+         THIS - they are axis-aligned boxes in camera coordinates whose z bounds
+         are read as world heights offset by the lens height, which only holds
+         while the camera frame's z is world-up. Do not add a tilt here.
+
+         x = +0.019 seats the housing ON the panel: the back face lands at
+         base_link 0.40425 against the panel's 0.4044, so it beds in by 0.15 mm
+         with no gap to show. It was +0.1027, which left the back face at
+         0.48795 - 83 mm of clear air in front of the chassis - and z was
+         +0.109, another 86 mm above the top of the flat panel, so the camera
+         hung unsupported in space.
+
+         Resolves to base_link (0.425, 0, 0.091) = FRONT_CAM_Z 0.22328 m above
+         the floor, down from 0.33228. pick_and_place.FRONT_CAM_Z and every
+         camera-frame gate z band were re-derived against this; anything else
+         expressed in base_link (COLUMN_STOP_X, GRIPPER_X, MAX_REACH_X ...) is
+         unaffected, since detections are transformed out of the camera frame
+         through TF before they are compared to those. -->
+    <origin xyz="0.019 0 0" rpy="0 0 0"/>
   </joint>
 
   <link name="front_camera_optical_link"/>
@@ -297,8 +357,8 @@
   </joint>
 
   <!-- ============ Wrist RGB-D camera (eye-in-hand, on the Franka Hand) ====
-       Mounted on fr3_hand, beside the hand body (its collision capsule has
-       radius 0.04, so x=0.055 clears it) and looking ALONG THE APPROACH AXIS.
+       Mounted on fr3_hand, flat against the side of the hand body, and looking
+       ALONG THE APPROACH AXIS.
 
        rpy="0 -pi/2 0" maps camera_link's +x onto fr3_hand's +z. That keeps
        the invariant the mission code relies on -the camera looks exactly
@@ -339,14 +399,27 @@
   <joint name="camera_joint" type="fixed">
     <parent link="fr3_hand"/>
     <child link="camera_link"/>
-    <!-- Moved out 0.055 -> 0.068 along the hand's x. The real D405 is 42 mm
-         square where the placeholder box was 30x20, and fr3_hand's collision
-         capsule has a 0.04 m radius about the hand axis - at 0.055 the real
-         body would visibly clip into the hand. 0.068 puts its nearest face
-         0.047 m off the axis, clear of the capsule, without touching the
-         approach-axis alignment (this offset is perpendicular to the view
-         direction, and detection transforms through TF regardless). -->
-    <origin xyz="0.068 0 0.04" rpy="0 -1.5708 0"/>
+    <!-- x = 0.048 seats the D405 against the hand. It was 0.068, chosen to
+         clear a 0.04 m collision CAPSULE about the hand axis - but that capsule
+         only exists when with_sc=true, and franka_robot is called above with
+         with_sc="false", so nothing was ever there to clear. The hand's real
+         surface is much closer in: hand.stl's side face is a TAPER, measured by
+         cross-sectioning the mesh at the camera's own y band -
+             hand z 0.021 -> x 0.0280      hand z 0.044 -> x 0.0223
+         (widest at 0.0315 down near z=0.005, narrowing all the way up).
+         With the mesh reaching 0.021 back from camera_link, x=0.068 put the
+         camera's back face at hand x=0.047, leaving 19 mm of visible air
+         between it and the hand.
+
+         0.048 puts that back face at 0.027, which beds 1 mm into the hand at
+         the camera's lower edge and leaves ~4 mm at its upper edge where the
+         taper has fallen away - flush to the eye, and the small bite guarantees
+         no daylight shows through. This offset is perpendicular to the view
+         direction and does not touch the approach-axis alignment; detections
+         transform through TF regardless. camera_link vs fr3_hand is already
+         disable_collisions="Adjacent" in the SRDF, so the contact costs
+         nothing in planning. -->
+    <origin xyz="0.048 0 0.04" rpy="0 -1.5708 0"/>
   </joint>
 
   <link name="camera_optical_link"/>

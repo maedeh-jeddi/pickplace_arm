@@ -70,8 +70,8 @@ def generate_launch_description():
     # sized for a 0.38 m-long chassis with a 0.66 m-reach arm whose gripper
     # worked 0.05 m off the floor; the Husky is 0.99 m long and the FR3's base
     # alone sits 0.384 m up, so the old 0.10 m table and 0.08-0.16 m columns
-    # were entirely below the front camera's horizon (0.332 m) and could not
-    # be seen at all at approach range.
+    # were entirely below the front camera's horizon (0.223 m, and 0.332 m when
+    # these props were scaled) and could not be seen at approach range.
     #   table   0.18x0.60x0.10  ->  0.25x1.00x0.30   (top at z=0.30)
     #   boxes   0.045 cube      ->  0.06 cube        (still well inside the
     #                                                 Franka Hand's 0.08 m jaw)
