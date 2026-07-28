@@ -5,10 +5,14 @@
   <!-- Mobile manipulator: Clearpath Husky A200 base + Franka FR3 arm +      -->
   <!-- Franka Hand gripper.                                                  -->
   <!--                                                                       -->
-  <!-- Base and arm are REFERENCED out of the upstream description packages  -->
-  <!-- via $(find ...), never copied, so their meshes stay in one place:      -->
+  <!-- Base and arm geometry is VENDORED into this package, under            -->
+  <!-- urdf/vendor/ and meshes/. It used to be referenced via $(find ...) out -->
+  <!-- of the upstream packages, but those were nested git checkouts that     -->
+  <!-- could not be pushed with this project, so the subset this robot        -->
+  <!-- actually uses was copied in and the URIs repointed. Provenance:        -->
   <!--   * clearpath_platform_description (humble)  -> Husky A200            -->
   <!--   * franka_description 1.6.1                 -> FR3 arm + Franka Hand -->
+  <!-- Upstream licences are kept beside the meshes as LICENSE.<package>.     -->
   <!--                                                                       -->
   <!-- NOTE on the Husky variant: the A300 does NOT exist on clearpath_common -->
   <!-- humble (it is jazzy-only). A200 is the humble Husky, and is what this  -->
@@ -84,8 +88,8 @@
          base_footprint  z = -0.13228  (so base_link is 0.13228 m off the ground)
          wheels       x +/-0.256, y +/-0.2775, radius 0.1651, track 0.555
          default_mount   z = 0.224 -->
-  <xacro:include filename="$(find clearpath_platform_description)/urdf/a200/a200.urdf.xacro"/>
-  <xacro:include filename="$(find clearpath_platform_description)/urdf/a200/attachments/top_plate.urdf.xacro"/>
+  <xacro:include filename="$(find pickplace_arm_description)/urdf/vendor/a200/a200.urdf.xacro"/>
+  <xacro:include filename="$(find pickplace_arm_description)/urdf/vendor/a200/attachments/top_plate.urdf.xacro"/>
 
   <!-- ============ Wheel visual override ============
        WHY THIS EXISTS: Clearpath's wheel.dae is a 7 inch-radius (0.1778 m)
@@ -103,12 +107,15 @@
        origins and base_footprint are untouched, so GROUND_Z (-0.13228) and the
        odometry stay exactly as they were.
 
-       WHY IT IS HERE AND NOT IN wheel.urdf.xacro: clearpath_common is a nested
-       git checkout, not part of this repo's history, so an edit there would be
-       invisible to review and lost on any re-clone. Redefining the macro after
-       the include but BEFORE the <xacro:a200> call means xacro resolves
-       a200_wheel to THIS definition when it expands the a200 body - the fix
-       lives in our own tracked package and upstream stays pristine.
+       WHY IT IS HERE AND NOT IN wheel.urdf.xacro: originally because
+       clearpath_common was a nested git checkout whose edits would have been
+       lost on any re-clone. That package is gone now and wheel.urdf.xacro is
+       vendored under urdf/vendor/, so the fix COULD be applied there - it is
+       deliberately not, so the vendored files stay a faithful copy of upstream
+       apart from mechanical path rewrites. Anything this project changes about
+       the A200 lives here, where it is visible next to the reasoning.
+       Redefining the macro after the include but BEFORE the <xacro:a200> call
+       is what makes xacro resolve a200_wheel to THIS definition.
 
        The body below mirrors Clearpath's macro exactly apart from the mesh
        scale. The two dimensions are inlined as literals rather than read from
@@ -125,7 +132,7 @@
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry>
-          <mesh filename="package://clearpath_platform_description/meshes/a200/wheel.dae"
+          <mesh filename="package://pickplace_arm_description/meshes/a200/wheel.dae"
                 scale="0.9285714 1.0 0.9285714"/>
         </geometry>
       </visual>
@@ -184,16 +191,16 @@
          with_sc="false"       -> no coarse self-collision capsule sub-links;
                                   MoveIt uses the real collision meshes.
          ros2_control="false"  -> ditto, our own block owns the interfaces. -->
-  <xacro:include filename="$(find franka_description)/robots/common/franka_robot.xacro"/>
+  <xacro:include filename="$(find pickplace_arm_description)/urdf/vendor/franka/robots/common/franka_robot.xacro"/>
 
   <xacro:franka_robot
     robot_type="fr3"
     arm_prefix=""
     no_prefix="false"
-    joint_limits="${xacro.load_yaml('$(find franka_description)/robots/fr3/joint_limits.yaml')}"
-    inertials="${xacro.load_yaml('$(find franka_description)/robots/fr3/inertials.yaml')}"
-    kinematics="${xacro.load_yaml('$(find franka_description)/robots/fr3/kinematics.yaml')}"
-    dynamics="${xacro.load_yaml('$(find franka_description)/robots/fr3/dynamics.yaml')}"
+    joint_limits="${xacro.load_yaml('$(find pickplace_arm_description)/config/franka/fr3/joint_limits.yaml')}"
+    inertials="${xacro.load_yaml('$(find pickplace_arm_description)/config/franka/fr3/inertials.yaml')}"
+    kinematics="${xacro.load_yaml('$(find pickplace_arm_description)/config/franka/fr3/kinematics.yaml')}"
+    dynamics="${xacro.load_yaml('$(find pickplace_arm_description)/config/franka/fr3/dynamics.yaml')}"
     accelerometer_config="none"
     hand="true"
     ee_id="franka_hand"
@@ -245,7 +252,7 @@
        longer appear. -->
   <!-- Modelled as a SICK TiM5xx (TiM571): a real 270 deg, single-plane scanner
        whose datasheet geometry is what the sensor config above already
-       describes. Mesh referenced out of sick_scan_xd, not copied.
+       describes. Mesh vendored from sick_scan_xd into meshes/sensors/.
 
        SICK's own URDF convention (sick_scan_xd/urdf/sick_scan.urdf.xacro):
        the mesh is in METRES and its origin IS the laser centre, placed on the
@@ -264,7 +271,7 @@
        plate, which is what this joint's z now corrects. -->
   <link name="lidar_link">
     <visual>
-      <geometry><mesh filename="package://sick_scan_xd/meshes/sick_tim_5xx.stl"/></geometry>
+      <geometry><mesh filename="package://pickplace_arm_description/meshes/sensors/sick_tim_5xx.stl"/></geometry>
       <material name="arm_grey"/>
     </visual>
     <!-- Collision is a PRIMITIVE, not the mesh, even though SICK's own URDF
@@ -338,8 +345,8 @@
        puts the camera body at z 0.0765..0.1055, entirely on the panel. -->
   <!-- Modelled as an Intel RealSense D455 (87 x 58 deg FOV), which matches the
        90 deg / 8 m sensor configured for it and is the D400-series part
-       normally fitted to a mobile base. Mesh referenced out of
-       realsense2_description, not copied.
+       normally fitted to a mobile base. Mesh vendored from
+       realsense2_description into meshes/sensors/.
 
        IT IS A D455 AND NOT A D435 FOR A RENDERING REASON, measured not assumed.
        Gazebo (gz-sim 8.14, ogre2) IGNORES an SDF <material> on a mesh that
@@ -376,7 +383,7 @@
     <visual>
       <origin xyz="0.00465 0 0" rpy="${PI/2} 0 ${PI/2}"/>
       <geometry>
-        <mesh filename="package://realsense2_description/meshes/d455.stl"
+        <mesh filename="package://pickplace_arm_description/meshes/sensors/d455.stl"
               scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="arm_grey"/>
@@ -444,7 +451,7 @@
   <!-- Modelled as an Intel RealSense D405: the short-range part of the family,
        built for exactly this eye-in-hand job (60 deg HFOV, useful from a few
        mm out), which matches the 60 deg / 0.05-5 m sensor configured for it.
-       Mesh referenced out of realsense2_description, not copied.
+       Mesh vendored from realsense2_description into meshes/sensors/.
 
        Offsets copied from Intel's _d405.urdf.xacro, same convention as the
        D435 above: mesh at (zero_depth_to_glass + glass_to_front, -cam_depth_py,
@@ -454,7 +461,7 @@
     <visual>
       <origin xyz="0.0038 -0.009 0" rpy="${PI/2} 0 ${PI/2}"/>
       <geometry>
-        <mesh filename="package://realsense2_description/meshes/d405.stl"
+        <mesh filename="package://pickplace_arm_description/meshes/sensors/d405.stl"
               scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="arm_grey"/>

@@ -16,18 +16,17 @@ def generate_launch_description():
 
     # Gazebo resolves package://<pkg>/... mesh URIs (as robot_state_publisher
     # emits them) by rewriting the scheme to model://<pkg>/... and searching
-    # GZ_SIM_RESOURCE_PATH for a <dir>/<pkg>/... match. Nothing set this
-    # before because the old placeholder robot had no mesh files at all (pure
-    # box/cylinder/sphere primitives) -- the Husky A200 and FR3/Franka Hand
-    # meshes now referenced out of clearpath_platform_description and
-    # franka_description need their share dirs' PARENT on the path, since
-    # get_package_share_directory already returns .../share/<pkg_name>.
+    # GZ_SIM_RESOURCE_PATH for a <dir>/<pkg>/... match, so the share dir's
+    # PARENT is what goes on the path (get_package_share_directory already
+    # returns .../share/<pkg_name>).
+    #
+    # This used to list four entries -- clearpath_platform_description,
+    # franka_description, realsense2_description and sick_scan_xd. All of that
+    # geometry now lives in this package's own meshes/ (see CMakeLists), so one
+    # entry covers the Husky A200, the FR3 + Franka Hand, and the RealSense/SICK
+    # sensor housings alike.
     gz_resource_paths = [
-        os.path.dirname(get_package_share_directory('clearpath_platform_description')),
-        os.path.dirname(get_package_share_directory('franka_description')),
-        # Sensor meshes: RealSense D435/D405 and the SICK TiM5xx lidar.
-        os.path.dirname(get_package_share_directory('realsense2_description')),
-        os.path.dirname(get_package_share_directory('sick_scan_xd')),
+        os.path.dirname(pkg_description),
     ]
 
     xacro_file = os.path.join(pkg_description, 'urdf', 'pickplace_arm.urdf.xacro')

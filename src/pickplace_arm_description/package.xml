@@ -7,14 +7,13 @@
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <!-- Base and arm descriptions are referenced via $(find ...) at xacro time,
-       so they are runtime (exec) dependencies, not build ones. -->
-  <exec_depend>clearpath_platform_description</exec_depend>
-  <exec_depend>franka_description</exec_depend>
-  <!-- Sensor meshes: RealSense D435 (front) / D405 (wrist), SICK TiM5xx lidar -->
-  <exec_depend>realsense2_description</exec_depend>
-  <exec_depend>sick_scan_xd</exec_depend>
-
+  <!-- No description-package dependencies. The Husky A200 base, the FR3 arm +
+       Franka Hand, and the RealSense/SICK sensor housings used to be pulled in
+       at xacro time from clearpath_platform_description, franka_description,
+       realsense2_description and sick_scan_xd. Those were nested git checkouts
+       that could not be pushed with this project, so the subset this robot
+       actually uses is now vendored into urdf/vendor/ + meshes/ here, and this
+       package stands alone. -->
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>joint_state_publisher_gui</exec_depend>
   <exec_depend>xacro</exec_depend>
