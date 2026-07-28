@@ -13,8 +13,8 @@ def generate_launch_description():
     Drive the robot around to build the map, then save it:
       ros2 run pickplace_arm_bringup teleop_key        # in a 2nd terminal
       ros2 run nav2_map_server map_saver_cli -f \
-          $(ros2 pkg prefix pickplace_arm_bringup)/share/pickplace_arm_bringup/maps/warehouse
-    (or save into the source tree: .../src/pickplace_arm_bringup/maps/warehouse)
+          $(ros2 pkg prefix pickplace_arm_bringup)/share/pickplace_arm_bringup/maps/tugbot_warehouse
+    (or save into the source tree: .../src/pickplace_arm_bringup/maps/tugbot_warehouse)
     """
     desc_share = get_package_share_directory('pickplace_arm_description')
     bringup_share = get_package_share_directory('pickplace_arm_bringup')

@@ -30,13 +30,13 @@ def generate_launch_description():
     ]
 
     xacro_file = os.path.join(pkg_description, 'urdf', 'pickplace_arm.urdf.xacro')
-    # Default to the warehouse world (bigger, varied obstacles); override with
-    # the WORLD env var pointing at another .sdf under worlds/ if needed.
-    world_name = os.environ.get('WORLD', 'warehouse.sdf')
+    # tugbot_warehouse.sdf is the only world this project ships, and the one
+    # the mission's saved map was built against. Override with the WORLD env
+    # var to point at another .sdf under worlds/.
+    world_name = os.environ.get('WORLD', 'tugbot_warehouse.sdf')
     world_file = os.path.join(pkg_description, 'worlds', world_name)
-    # World origin (0,0) is only guaranteed clear for the worlds built for
-    # this project (warehouse/pickplace) -- a world like ionic.sdf (a dense,
-    # furnished interior) can have the origin sitting inside furniture, so
+    # World origin (0,0) is clear in this world and is where the map origin
+    # sits. A denser world can have the origin inside furniture, so
     # SPAWN_X/SPAWN_Y let a different world pick a clear spot to spawn into.
     spawn_x = os.environ.get('SPAWN_X', '0.0')
     spawn_y = os.environ.get('SPAWN_Y', '0.0')
@@ -48,8 +48,8 @@ def generate_launch_description():
     }
 
     # HEADLESS=1 runs the Gazebo SERVER only (no GUI, `-s`). Needed for heavy
-    # worlds like ionic.sdf: its GUI carries a GlobalIlluminationVct plugin
-    # (high-quality voxel GI, 9 light bounces) that drags the real-time factor
+    # worlds: a GUI carrying a GlobalIlluminationVct plugin (high-quality voxel
+    # GI, 9 light bounces) was measured dragging the real-time factor
     # down to ~0.28, which starves the LIDAR (drops to ~3 Hz) and makes
     # slam_toolbox's scan matcher fail during rotation -- the map->base_link
     # TF freezes while the robot physically spins. Sensor rendering (RGB-D,

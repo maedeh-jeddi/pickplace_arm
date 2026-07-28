@@ -27,15 +27,19 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'pick_and_place = pickplace_arm_bringup.pick_and_place:main',
-            'search_and_pick = pickplace_arm_bringup.search_and_pick:main',
-            'nav_and_pick = pickplace_arm_bringup.nav_and_pick:main',
-            'mission = pickplace_arm_bringup.mission:main',
-            'mission_2 = pickplace_arm_bringup.mission_2:main',
-            'mission_2_ionic = pickplace_arm_bringup.mission_2:main_ionic',
-            'mission_2_tugbot = pickplace_arm_bringup.mission_2:main_tugbot',
+            # The pick-and-place mission is the only behaviour with a launch
+            # file, so it is the only behaviour with an executable. The modules
+            # behind it are NOT dead code and must not be deleted: the mission
+            # class is the end of an inheritance chain --
+            #   PickAndPlace -> SearchAndPick -> NavAndPick -> Mission
+            #                -> Mission2 -> Mission2Tugbot
+            # so pick_and_place.py, search_and_pick.py, nav_and_pick.py,
+            # mission.py and mission_2.py are all still imported at runtime.
+            # They simply no longer have entry points of their own.
+            'mission_pickPlace = pickplace_arm_bringup.mission_2:main_tugbot',
+            # Manual driving, used when building a map with mapping.launch.py.
             'teleop_key = pickplace_arm_bringup.teleop_key:main',
-            'tugbot_demo = pickplace_arm_bringup.tugbot_demo:main',
+            # Startup readiness gate used by mission_pickPlace.launch.py.
             'wait_for = pickplace_arm_bringup.wait_for:main',
         ],
     },

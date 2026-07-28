@@ -92,7 +92,7 @@ def generate_launch_description():
                spawn('apriltag_column_3', 'apriltag_column_3', -1.0, 0.45, 0.0, 3.14159)]
 
     mission = Node(
-        package='pickplace_arm_bringup', executable='mission_2_tugbot',
+        package='pickplace_arm_bringup', executable='mission_pickPlace',
         output='screen', parameters=[sim])
 
     # ---- readiness gates -----------------------------------------------------

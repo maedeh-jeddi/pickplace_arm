@@ -654,63 +654,6 @@ class Mission2(Mission):
         log.info('=== MISSION 2: DONE ===')
 
 
-# --- Ionic-world layout -------------------------------------------------------
-# The Ionic restaurant world (worlds/ionic.sdf) is a bigger, cluttered interior;
-# its map frame equals the Gazebo WORLD frame (the occupancy grid is generated
-# from the world's own collision geometry, so map coordinates ARE world
-# coordinates). The whole warehouse layout is translated by (+5.70, +1.5) into a
-# verified-clear pocket around world (4.7..8.0, 1.5): the table sits at world
-# (8.0, 1.5) and the columns 3.3 m away at world (4.7, 1.5) -- identical relative
-# geometry to the warehouse, so only these coordinates change. Robot spawns at
-# world (6.5, 1.5); see mission_2_ionic.launch.py / amcl_ionic.yaml. Positions
-# were checked clear against the generated map before use.
-class Mission2Ionic(Mission2):
-    LAYOUT_TABLE_APPROACH = (7.15, 1.5, 0.0)
-    LAYOUT_BOXES = [
-        ('red',   (8.0, 1.34)),
-        ('green', (8.0, 1.50)),
-        ('blue',  (8.0, 1.66)),
-    ]
-    LAYOUT_COLUMNS = [
-        (0, 0.08, (4.7, 1.20)),   # red   -> column 1,  8 cm
-        (1, 0.12, (4.7, 1.50)),   # green -> column 2, 12 cm
-        (2, 0.16, (4.7, 1.80)),   # blue  -> column 3, 16 cm
-    ]
-    LAYOUT_FINAL_POSE = (6.3, 1.5, 0.0)
-    # The Ionic restaurant is decorated white + navy blue (walls, ceiling
-    # beams, pillars) -- the same blue as the blue box/column -- so the raw
-    # front-camera blue blob is dominated by architecture and the colour servo
-    # locked onto a wall instead of the column (blue placement failed while
-    # red/green succeeded). This camera-frame gate (X-forward, Y-left, Z-up,
-    # metres) keeps only points DEAD AHEAD (x 0.05-0.9 m), roughly CENTRED
-    # (|y| < 0.35 m, rejects the side walls) and LOW (z -0.2..0.2 m, rejects
-    # the ceiling beams) -- i.e. where a column the robot has driven up to
-    # actually is. Verified against the failing frame: the distractor centroid
-    # sat at camera (0.76, 0.58, 0.24) -- outside both the y and z bounds.
-    #
-    # NOT shifted with the lens the way TUGBOT_GATE was, deliberately. Its
-    # bounds were fitted to a MEASURED distractor in camera coordinates, and
-    # sliding the upper bound up by 0.109 would readmit that 0.24 ceiling beam.
-    # Left as-is, the band now maps to world heights 0.02..0.42 (lens at
-    # FRONT_CAM_Z = 0.223) instead of 0.13..0.53, which suits this world's short
-    # 0.08/0.12/0.16 m columns better than the old mount did.
-    COLUMN_DETECT_GATE = (0.05, 0.9, -0.35, 0.35, -0.2, 0.2)
-    # The two SHORTER columns keep the warehouse-default stop (0.36) and
-    # clearance (0.21) -- they place to <5 mm here, and approaching them closer
-    # measurably made them WORSE (closer-range detection is less accurate), so
-    # that stays untouched. Only the TALL (16 cm) column is treated specially:
-    # placing on it needs an over-column clearance of z~0.21, which at the
-    # default ~0.38 placement x sits right at the arm's reachable edge from the
-    # carry branch -- it worked in some runs and failed NO_IK_SOLUTION in
-    # others. Stopping 6 cm closer for that column only (placement x ~0.34)
-    # moves it well inside reach (/compute_ik from the carry seed: z up to 0.25
-    # is comfortable at x 0.30-0.34), and allows a slightly higher ceiling for
-    # real clearance over the 0.16 top (box bottom = over_z - 0.03).
-    TALL_COLUMN_H = 0.14
-    COLUMN_STOP_X_TALL = 0.30
-    OVER_Z_CEILING_TALL = 0.23
-
-
 class Mission2Tugbot(Mission2):
     """Downloaded OpenRobotics "Tugbot in Warehouse" Fuel world. Reuses the
     plain warehouse layout unchanged (table/columns/final pose): this room's
@@ -723,8 +666,7 @@ class Mission2Tugbot(Mission2):
     trim) that fools the plain HSV blob detector -- confirmed live: an
     ungated 'red' search locked onto something 3+ m out and >1 m up instead
     of the table box. Gate every colour detection (both the box pick and the
-    column placement) to dead-ahead/close/low, the same technique
-    Mission2Ionic uses for its navy-blue-walls problem."""
+    column placement) to dead-ahead/close/low."""
     # Camera-frame gate (X-forward, Y-left, Z-up, metres) that rejects this
     # world's same-coloured clutter. Re-derived for the scaled-up props AND the
     # camera height: the gate's z bounds are relative to the LENS, which sits
@@ -751,8 +693,8 @@ class Mission2Tugbot(Mission2):
     # out ("lost the column") before ever reaching the stop distance.
     # TALL_COLUMN_H is never overridden here (stays the base class's 99.0,
     # i.e. no column in this world takes the "tall" branch), so the reach
-    # headroom COLUMN_STOP_X was meant to buy in the tall-column case (see
-    # Mission2Ionic) doesn't actually apply -- there is no reach reason to
+    # headroom COLUMN_STOP_X was meant to buy in the tall-column case
+    # doesn't actually apply -- there is no reach reason to
     # stop this close. Left at the class default (GRIPPER_X - 0.02, same
     # distance verified working in the plain warehouse world).
     #
@@ -824,14 +766,6 @@ def _run(node_cls):
         pass
     finally:
         rclpy.shutdown()
-
-
-def main():
-    _run(Mission2)
-
-
-def main_ionic():
-    _run(Mission2Ionic)
 
 
 def main_tugbot():

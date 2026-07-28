@@ -1,13 +1,43 @@
-# colcon build artifacts
+# --- colcon / ament build artifacts -----------------------------------------
+# Deliberately NOT anchored to the workspace root (no leading slash), so a
+# stray `colcon build` run from inside a subdirectory is ignored too. That has
+# happened: build/, install/ and log/ trees were left sitting inside
+# src/pickplace_arm_description/models/ and src/pickplace_arm_bringup/config/.
 build/
 install/
 log/
+*.egg-info/
+.catkin_tools/
 
-# Python
+# --- Python ------------------------------------------------------------------
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
 
-# Editor / OS
+# --- Editor / IDE / OS -------------------------------------------------------
 .vscode/
+.idea/
 *.swp
+*.swo
+*~
 .DS_Store
+
+# --- Local tooling -----------------------------------------------------------
+.claude/
+
+# --- Patch, backup and crash leftovers ---------------------------------------
+# Core files are large and never worth committing; rviz2 core-dumped more than
+# once while its display config was being sorted out.
+*.orig
+*.rej
+*.bak
+*.backup
+core
+core.*
+
+# --- Simulation runtime output ------------------------------------------------
+# Gazebo keeps its logs and Fuel model cache under $HOME, not here, but a
+# recording run drops state files in the working directory.
+*.gzstate
+*.gzlog

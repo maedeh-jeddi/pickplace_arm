@@ -10,9 +10,9 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    """Localize on the saved warehouse map (map_server + AMCL) and run Nav2.
+    """Localize on the saved map (map_server + AMCL) and run Nav2.
 
-    Gazebo (warehouse) + map_server serving maps/warehouse.yaml + AMCL (supplies
+    Gazebo + map_server serving maps/tugbot_warehouse.yaml + AMCL (supplies
     map->odom) + the Nav2 core + RViz. No slam_toolbox. Send goals from RViz
     "Nav2 Goal"; the robot plans, follows, and avoids obstacles.
     """
@@ -38,7 +38,7 @@ def generate_launch_description():
 
     amcl = Node(
         package='nav2_amcl', executable='amcl', name='amcl', output='screen',
-        parameters=[os.path.join(bringup_share, 'config', 'amcl.yaml'), sim])
+        parameters=[os.path.join(bringup_share, 'config', 'amcl_tugbot.yaml'), sim])
 
     localization_lifecycle = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
@@ -58,7 +58,7 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('use_rviz', default_value='true'),
         DeclareLaunchArgument('map', default_value=os.path.join(
-            bringup_share, 'maps', 'warehouse.yaml')),
+            bringup_share, 'maps', 'tugbot_warehouse.yaml')),
         gazebo,
         map_server,
         amcl,

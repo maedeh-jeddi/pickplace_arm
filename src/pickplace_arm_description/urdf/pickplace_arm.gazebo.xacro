@@ -225,7 +225,21 @@
   <gazebo reference="camera_link">
     <sensor name="rgbd_camera" type="rgbd_camera">
       <topic>/camera</topic>
-      <update_rate>30</update_rate>
+      <!-- 5 Hz, down from 30. RGB-D rendering is BY FAR the most expensive
+           thing in this simulation: two 640x480 rgbd_camera sensors at 30 Hz
+           held the real-time factor at 0.28 with the Gazebo GUI up (measured
+           on gazebo.launch.py alone, so this is the simulator itself, not the
+           ROS stack). Cutting both to what the code actually consumes took it
+           to 0.80, and the full mission stack with RViz and the GUI now runs
+           at RTF 1.000 - i.e. real time instead of roughly a quarter of it.
+           A 3-box run went from ~555 s of wall clock to ~355 s.
+
+           5 Hz is generous for THIS camera. The wrist camera is only read by
+           detect_box_pose(), whose default timeout is 5.0 s, and the
+           pick-and-place mission never uses that path at all - it picks with
+           the front camera via grab_below(). So this sensor was rendering 30
+           frames a second for nothing. -->
+      <update_rate>5</update_rate>
       <always_on>1</always_on>
       <visualize>true</visualize>
       <camera>
@@ -315,7 +329,18 @@
   <gazebo reference="front_camera_link">
     <sensor name="front_rgbd_camera" type="rgbd_camera">
       <topic>/front_camera</topic>
-      <update_rate>30</update_rate>
+      <!-- 15 Hz, down from 30 - see the wrist camera above for the measured
+           cost. This one carries the whole mission (box pick AND column
+           placement), so it keeps roughly 2x the margin it needs rather than
+           being cut to the bone: the tightest consumer is approach_column's
+           servo loop, which calls detect_box_front(timeout_sec=0.25) and then
+           publishes for 4 x 0.03 s, so it cannot go round faster than about
+           8 Hz. At 15 Hz a fresh frame is always waiting for it.
+
+           Verified, not assumed: a full 3-box run at these rates placed and
+           verified all three boxes with ZERO "lost the column", "no box
+           detected" or "jaws closed on air" warnings. -->
+      <update_rate>15</update_rate>
       <always_on>1</always_on>
       <visualize>true</visualize>
       <camera>
