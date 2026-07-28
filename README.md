@@ -3,6 +3,9 @@
 A **Clearpath Husky A200** mobile base carrying a **Franka Emika FR3** 7-DOF arm
 with a **Franka Hand** gripper, simulated in ROS 2 Humble + Gazebo Harmonic.
 
+<!-- Drop the file at docs/images/banner.gif -- see docs/images/README.md -->
+![Pick-and-place mission](docs/images/banner.gif)
+
 The robot runs one complete autonomous mission end to end: it localizes itself
 on a saved map of a warehouse, drives to a table, picks three coloured cubes off
 it one at a time using its front camera, carries each across the room, places it
@@ -108,8 +111,9 @@ Launch arguments:
 | `use_rviz` | `true` | Start RViz with the full mission layout. |
 | `use_gazebo_gui` | `true` | `false` runs Gazebo headless (server only). Sensor rendering happens on the server, so nothing is lost but the scenery — and it saves a lot of RAM. |
 
-On a machine with nothing else running, the mission starts driving about
-**13 seconds** after launch, and the full three-box run takes a few minutes.
+On a machine with nothing else running, the mission starts driving **13–18
+seconds** after launch (measured across runs), and a full three-box run takes
+about **6 minutes** of wall clock.
 
 > **Before every launch, make sure no simulator is still running.** See
 > [Troubleshooting](#troubleshooting) — this is the single most common cause of
@@ -126,6 +130,12 @@ spawned into it by the launch file:
 - three **6 cm cubes** on the table — red, green, blue
 - three **columns** at map x = −1.0, 20 cm square, of heights **0.30 / 0.40 /
   0.50 m**, each painted the colour of the cube that belongs on it
+
+<!-- Drop the file at docs/images/gazebo.png -- see docs/images/README.md -->
+![The scene in Gazebo](docs/images/gazebo.png)
+
+*The Tugbot warehouse: the robot, the table with the three cubes, and the three
+matching columns.*
 
 For each cube, in order:
 
@@ -392,6 +402,12 @@ footprint, global/local plans, AMCL particles), **Perception** (LIDAR, both
 point clouds, both camera images) and a MoveIt **MotionPlanning** panel. Two
 saved views are included: *Chase robot* and *Gripper close-up*.
 
+<!-- Drop the file at docs/images/rviz.png -- see docs/images/README.md -->
+![The RViz mission layout](docs/images/rviz.png)
+
+*Robot model and TF, map and costmaps, the LIDAR scan and both camera feeds,
+alongside the MoveIt MotionPlanning panel.*
+
 Two things in that file are deliberate and should not be "tidied":
 
 - The `Panels` and `Window Geometry` sections are copied verbatim from a working
@@ -605,7 +621,7 @@ colcon build --packages-select <pkg> --symlink-install
 - [x] Nav2 autonomous navigation
 - [x] Rigid grasping via `DetachableJoint` (friction alone was not reliable)
 - [x] Full colour-sorting mission with verified placement
-- [x] Readiness-gated startup (~13 s to mission start)
+- [x] Readiness-gated startup (13–18 s to mission start)
 - [x] Self-contained workspace — no external description packages
 - [ ] Multi-robot / fleet operation
 - [ ] Real-hardware bring-up
