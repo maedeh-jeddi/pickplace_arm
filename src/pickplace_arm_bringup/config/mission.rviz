@@ -52,6 +52,26 @@ Visualization Manager:
     Cell Size: 1
     Plane Cell Count: 40
     Color: 100; 100; 100
+    # Z = -0.13228 puts the grid on the FLOOR rather than at odom's origin.
+    # The EKF runs two_d_mode:=true, which forces z=0 on the odom->base_link
+    # transform it publishes, so base_link sits at odom z=0 even though it is
+    # physically 0.13228 m up (that is base_footprint_joint's offset, and
+    # wheel_radius - wheel_vertical_offset). The floor therefore lies at
+    # z=-0.13228 in odom/map, and a grid drawn at 0 slices each wheel 33 mm
+    # above its centre -- the robot looks sunk to its axles.
+    #
+    # Fixed HERE and not in the EKF on purpose. two_d_mode:=false would let z
+    # go, and nothing in this filter measures z, vz, roll or pitch (odom0
+    # supplies vx only, imu0 yaw only), so they would random-walk and take the
+    # heading fusion with them. Re-rooting the URDF at base_footprint -- the
+    # textbook fix -- is worse still: the URDF root IS MoveIt's planning frame,
+    # so every mission z (GROUND_Z, grasp/carry heights) would shift 0.13228.
+    # Nothing functional reads this z anyway: AMCL, the costmaps and Nav2 are
+    # 2D, and MoveIt plans base_link-relative.
+    Offset:
+      X: 0
+      Y: 0
+      Z: -0.13228
     Value: true
   - Class: rviz_common/Group
     Name: Robot
@@ -115,6 +135,7 @@ Visualization Manager:
         Value: /map
         Durability Policy: Transient Local
       Color Scheme: map
+      Draw Behind: true
       Alpha: 0.7
       Value: true
     - Class: rviz_default_plugins/Map
@@ -123,6 +144,7 @@ Visualization Manager:
         Value: /global_costmap/costmap
         Durability Policy: Transient Local
       Color Scheme: costmap
+      Draw Behind: true
       Alpha: 0.4
       Value: true
     - Class: rviz_default_plugins/Map
@@ -131,6 +153,7 @@ Visualization Manager:
         Value: /local_costmap/costmap
         Durability Policy: Transient Local
       Color Scheme: costmap
+      Draw Behind: true
       Alpha: 0.6
       Value: true
     - Class: rviz_default_plugins/Polygon
