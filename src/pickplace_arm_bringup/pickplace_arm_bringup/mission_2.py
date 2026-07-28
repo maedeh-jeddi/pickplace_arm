@@ -530,20 +530,25 @@ class Mission2(Mission):
         placement. Both bounds are computed from FRONT_CAM_Z, so they follow the
         lens automatically; nothing here needs touching when it moves.
 
-        WHAT DOES NOT FOLLOW AUTOMATICALLY is whether the box is VISIBLE at all.
-        The box sits centred on a column 0.20 m deep, so it is set back 0.07 m
-        behind the column's near face, and the sight line has to clear that
-        face's top edge. From the lens at base_link (0.425, 0.091), stopping at
-        COLUMN_STOP_X, that grazing ray clears the box only for the SHORT
-        column; the camera also has a 73.7 deg vertical cone that runs out at
-        the same time. Per column height, whether any of the box's near face is
-        both unoccluded and inside the cone:
-            0.30 m  yes, ~36 mm of face      (was yes, whole face)
-            0.40 m  NO, cone runs out ~5 mm short  (was yes, ~26 mm)
-            0.50 m  no                       (was no -- self-occluded either way)
-        So a true placement on the 0.40 m column can now log as FAILED. The fix
-        if that bites is to back the base off ~0.2 m before looking rather than
-        to widen the gate: the gate is not what is rejecting it."""
+        Visibility at the lower lens height was a worry -- the box sits centred
+        on a 0.20 m-deep column, so it is set back 0.07 m behind the column's
+        near face, and a pinhole argument said the sight line grazing that
+        face's top edge, plus the 73.7 deg vertical cone, should leave the
+        0.40 m and 0.50 m columns' boxes invisible from base_link (0.425,
+        0.091). MEASURED, THAT IS WRONG: a full 3-box run verified all three,
+
+            red   (0.30 m column)  box z=0.202 vs column top 0.198
+            green (0.40 m column)  box z=0.303 vs 0.298
+            blue  (0.50 m column)  box z=0.405 vs 0.398
+
+        with ground truth afterwards confirming all three boxes on their
+        columns (z = 0.330 / 0.430 / 0.530). The pinhole model was too
+        pessimistic: the servo stops nearer 0.73 than the assumed 0.75, and the
+        detector needs a blob centroid rather than a fully unoccluded face. Kept
+        as a note because if this check ever DOES start failing on the tall
+        column while ground truth says the box is placed, the cause is
+        geometric visibility, not the gate -- and the fix is to back the base
+        off ~0.2 m before looking, not to widen the gate."""
         log = self.get_logger()
         # The gate must START ABOVE THE COLUMN TOP, not merely near the box.
         # Centring it on the box (+/- a few cm) lets the top slice of the

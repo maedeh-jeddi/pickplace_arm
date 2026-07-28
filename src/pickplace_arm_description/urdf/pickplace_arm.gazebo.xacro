@@ -245,7 +245,21 @@
           <stddev>0.007</stddev>
         </noise>
       </camera>
-      <gz_frame_id>camera_optical_link</gz_frame_id>
+      <!-- camera_link, NOT camera_optical_link. Gazebo Harmonic's rgbd_camera
+           emits its PointCloud2 in the GZ BODY convention (X forward, Y left,
+           Z up), not the ROS optical one (Z forward, X right, Y down). Tagging
+           it with the optical frame was therefore a lie about the data, and
+           RViz - which, unlike the mission code, actually honours the header
+           frame - applied the optical->body rotation and drew the whole cloud
+           swung 90 deg out to the robot's side.
+
+           Measured off a live frame to settle which convention it really is:
+               x  +0.26 .. +7.21   (all positive: this is the depth axis)
+               y  -5.06 .. +5.60   (left/right)
+               z  -0.24 .. +4.28   (floor, 0.22 below the lens, up to ceiling)
+           i.e. unambiguously X-forward. See the front camera below for the
+           same fix and the reason nothing else changes. -->
+      <gz_frame_id>camera_link</gz_frame_id>
     </sensor>
   </gazebo>
 
@@ -324,7 +338,23 @@
           <stddev>0.007</stddev>
         </noise>
       </camera>
-      <gz_frame_id>front_camera_optical_link</gz_frame_id>
+      <!-- front_camera_link, NOT front_camera_optical_link - same correction
+           as the wrist camera above, and the reason the cloud used to render
+           off to the robot's side in RViz instead of ahead of it.
+
+           This changes NOTHING for the mission: PickAndPlace._detect never
+           reads the header frame, it hardcodes cloud_frame='front_camera_link'
+           and transforms from there, which is exactly the frame the data was
+           always really in - which is also why detection stayed accurate (the
+           column near-face reads to 3 mm) the whole time the header was wrong.
+           The gates' documented "camera frame (X-forward, Y-left, Z-up)" is
+           now literally what the header says too.
+
+           front_camera_optical_link is left in the URDF: it costs one static
+           transform, it is the correct ROS optical frame should anything ever
+           need one (depth_image_proc and friends assume that convention), and
+           removing it would break nothing but document nothing either. -->
+      <gz_frame_id>front_camera_link</gz_frame_id>
     </sensor>
   </gazebo>
 

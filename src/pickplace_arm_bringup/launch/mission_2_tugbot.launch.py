@@ -3,10 +3,11 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
-                            SetEnvironmentVariable, TimerAction)
+                            RegisterEventHandler, SetEnvironmentVariable)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
@@ -94,6 +95,65 @@ def generate_launch_description():
         package='pickplace_arm_bringup', executable='mission_2_tugbot',
         output='screen', parameters=[sim])
 
+    # ---- readiness gates -----------------------------------------------------
+    # These replace the fixed 12/17/75/95/120 s TimerActions this file used to
+    # stage itself on. See wait_for.py for the measurements behind the change:
+    # in short, the /clock jump-backs that the 75 s localization delay existed
+    # to outlast come from an ORPHANED gz server left over from a previous run,
+    # not from this world loading. Measured on a clean process table, /clock is
+    # up at t+3.2 s, TF odom->base_link at t+5.3 s, and there are zero
+    # jump-backs -- so the old schedule idled ~115 s for nothing, while on a
+    # dirty table it silently masked the process leak instead of surfacing it.
+    #
+    # Each gate is a short-lived node that exits 0 once its condition holds
+    # (or once its timeout expires, so a stuck check can never brick a launch
+    # that would otherwise work), and the stage behind it is chained on
+    # OnProcessExit. The generous timeouts are what preserve the old
+    # worst-case behaviour: a genuinely slow or contended machine still ends
+    # up starting the same things in the same order.
+    def gate(label, timeout, *args):
+        return Node(package='pickplace_arm_bringup', executable='wait_for',
+                    name=f'wait_for_{label}', output='screen', parameters=[sim],
+                    arguments=['--label', label, '--timeout', str(timeout), *args])
+
+    # The world is up and simulating: props can be dropped into it.
+    gate_world = gate('world', 120.0, '--clock-stable', '0.5',
+                      '--tf', 'odom', 'base_link')
+    # The clock has been strictly monotonic for 3 s. This is the one AMCL
+    # actually cares about -- bringing it up mid-jump is what used to SIGABRT
+    # it -- so this gate, not a wall-clock delay, is what guards localization.
+    gate_clock = gate('clock', 150.0, '--clock-stable', '3.0',
+                      '--tf', 'odom', 'base_link')
+    # map_server and amcl are up far enough to answer lifecycle calls. THIS ONE
+    # IS LOAD-BEARING, and it is the one thing the faster startup broke: the
+    # lifecycle manager used to be started in the same breath as the two nodes
+    # it manages, which was survivable at the old 75 s mark when the machine was
+    # already idle, but at t+5 s Gazebo is still streaming the world in and the
+    # manager loses the race outright --
+    #     Configuring map_server
+    #     Failed to change state for node: map_server. Exception:
+    #       map_server/get_state service client: async_send_request failed.
+    #     Failed to bring up all requested nodes. Aborting bringup.
+    # after which nothing ever publishes map->odom, no `map` frame exists at
+    # all, and the mission dies on "no map->base_link TF". Waiting for the two
+    # get_state services to actually exist removes the race rather than
+    # re-hiding it behind a delay.
+    gate_lifecycle = gate('lifecycle', 90.0,
+                          '--service', '/map_server/get_state',
+                          '--service', '/amcl/get_state')
+    # AMCL is not merely alive but ACTIVE and localizing: map->base_link is the
+    # transform nav2's costmaps and the mission itself both require, and it only
+    # exists once amcl has been activated and has fused a scan. Waiting on the
+    # TF rather than on /amcl_pose alone is what makes this gate mean
+    # "localization works" instead of "a node is running".
+    gate_amcl = gate('amcl', 120.0, '--tf', 'map', 'base_link',
+                     '--topic', '/amcl_pose')
+    # Both action servers the mission drives are actually accepting goals.
+    # Waiting on these is what makes the mission start EARLY on a fast machine
+    # and still-correctly on a slow one.
+    gate_nav2 = gate('nav2', 120.0, '--action', '/navigate_to_pose',
+                     '--action', '/move_action')
+
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2', output='screen',
         condition=IfCondition(LaunchConfiguration('use_rviz')),
@@ -108,30 +168,56 @@ def generate_launch_description():
                     moveit_config.joint_limits, sim])
 
     return LaunchDescription([
+        # Arguments MUST be declared before anything that substitutes them:
+        # launch executes this list in order, so a SetEnvironmentVariable
+        # referencing an as-yet-undeclared LaunchConfiguration aborts the whole
+        # launch with "launch configuration ... does not exist".
+        #
+        # RViz is on by default: it is the stack's actual instrument panel
+        # (map, costmaps, plans, both camera feeds, the MoveIt planning scene),
+        # and with the Gazebo GUI also up the two together are the heaviest
+        # thing this launch does to a 16 GB box. use_gazebo_gui:=false drops
+        # the Gazebo window and leaves RViz as the single viewer -- sensor
+        # rendering happens on the gz SERVER, so nothing is lost but scenery.
+        DeclareLaunchArgument('use_rviz', default_value='true'),
+        DeclareLaunchArgument('use_gazebo_gui', default_value='true'),
         SetEnvironmentVariable('WORLD', 'tugbot_warehouse.sdf'),
+        # gazebo.launch.py takes its headless decision from this env var, and
+        # reads it when the include below is evaluated -- which happens after
+        # this action runs, so setting it here is enough (same pattern as
+        # WORLD above).
+        SetEnvironmentVariable('HEADLESS', PythonExpression(
+            ["'0' if '", LaunchConfiguration('use_gazebo_gui'),
+             "' == 'true' else '1'"])),
         SetEnvironmentVariable(
             'FASTRTPS_DEFAULT_PROFILES_FILE',
             os.path.join(bringup_share, 'config', 'fastdds_udp_only.xml')),
-        DeclareLaunchArgument('use_rviz', default_value='false'),
         gazebo,
         move_group,
-        # Startup is paced against the SIM CLOCK settling, not just node
-        # readiness. This world is a big downloaded Fuel scene and takes a long
-        # time to stream in; while it does, /clock jumps backwards repeatedly
-        # (measured: 561 "Detected jump back in time" warnings, from t+5 s
-        # right through to t+62 s). AMCL does not tolerate that -- it throws
-        # tf2::ExtrapolationException looking up lidar_link->odom and ABORTS
-        # (SIGABRT, exit -6), taking localization down and stranding the
-        # mission before it can navigate anywhere.
-        #
-        # So localization must not be activated until after the clock is
-        # monotonic. These periods put map_server/amcl comfortably past the
-        # measured settle point, with nav2 and the mission staged behind it.
-        # Verified afterwards by sampling /clock: strictly increasing.
-        TimerAction(period=6.0, actions=[rviz]),
-        TimerAction(period=12.0, actions=[table] + columns),
-        TimerAction(period=17.0, actions=boxes),
-        TimerAction(period=75.0, actions=[map_server, amcl, localization_lifecycle]),
-        TimerAction(period=95.0, actions=[nav2]),
-        TimerAction(period=120.0, actions=[mission]),
+        # RViz starts immediately rather than on a 6 s timer: it tolerates
+        # topics that do not exist yet, so there is nothing to wait for, and
+        # starting it first means the world appears as it loads.
+        rviz,
+        gate_world,
+        RegisterEventHandler(OnProcessExit(
+            target_action=gate_world, on_exit=[table] + columns)),
+        # Boxes chain off the TABLE's spawner exiting, not off a timer: they
+        # are placed at z=0.33, i.e. resting on the table top, so spawning them
+        # before the table exists drops all three on the floor.
+        RegisterEventHandler(OnProcessExit(target_action=table, on_exit=boxes)),
+        RegisterEventHandler(OnProcessExit(
+            target_action=gate_world,
+            on_exit=[gate_clock])),
+        # map_server and amcl first, WITHOUT their lifecycle manager -- it only
+        # follows once gate_lifecycle has seen both answer (see above).
+        RegisterEventHandler(OnProcessExit(
+            target_action=gate_clock,
+            on_exit=[map_server, amcl, gate_lifecycle])),
+        RegisterEventHandler(OnProcessExit(
+            target_action=gate_lifecycle,
+            on_exit=[localization_lifecycle, gate_amcl])),
+        RegisterEventHandler(OnProcessExit(
+            target_action=gate_amcl, on_exit=[nav2, gate_nav2])),
+        RegisterEventHandler(OnProcessExit(
+            target_action=gate_nav2, on_exit=[mission])),
     ])

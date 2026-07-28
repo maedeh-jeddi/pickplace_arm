@@ -108,6 +108,20 @@ APPROACH_Z = GRASP_Z + 0.15           # pre-grasp / lift height
 # the 0.06 box on both sides without sitting on the hard stop.
 GRIP_OPEN = 0.038
 GRIP_CLOSED = 0.0
+# Where the jaws are parked once the box is WELDED on (see attach_box). 0.0 is
+# what the grasp is commanded to, and it has to stay 0.0: the empty-grasp check
+# works precisely because closing on air reads ~0.000 while closing on a box is
+# stopped by it at ~0.030. But the moment the weld exists the box joins the
+# robot's own articulation, box/finger collision switches off, and that still-
+# active 0.0 command pulls the jaws the rest of the way -- straight through the
+# box, until the fingers disappear inside it. Harmless mechanically (the weld,
+# not friction, is carrying the box) but it looks broken.
+#
+# So after welding, the jaws are sent back out to the box's own half-width less
+# 1 mm: the faces land flush on the box with a millimetre of visual bite, no gap
+# and no interpenetration. It is cosmetic only -- nothing load-bearing depends
+# on where the fingers sit once the weld is there.
+GRIP_HOLD = BOX_SIZE / 2.0 - 0.001     # 0.029 for the 0.06 box
 # Box models that can be rigidly grasped (one DetachableJoint per colour on the
 # robot; the model names are box_red/box_green/box_blue in every world).
 BOX_COLORS = ('red', 'green', 'blue')
@@ -359,6 +373,15 @@ class PickAndPlace(Node):
         self._publish_box_cmd(self._attach_pubs[color])
         self._attached_color = color
         self.get_logger().info(f'[attach] {color} box welded to the gripper')
+        # Back the jaws off onto the box's faces, HERE rather than at the call
+        # site, for the same reason detach is hooked on gripper-open: welding is
+        # the one and only thing that turns box/finger collision off, so welding
+        # is the one and only place that has to undo the over-close it causes.
+        # Hooking it here means a future call site cannot forget.
+        #
+        # release=False because this is an opening motion that must NOT be read
+        # as letting go -- the weld it just made has to survive it.
+        self.gripper(GRIP_HOLD, 'settle jaws onto the box faces', release=False)
 
     def detach_box(self, color=None, log_label=''):
         """Release the weld. With no colour, releases every box (used at startup
@@ -500,9 +523,19 @@ class PickAndPlace(Node):
         time.sleep(0.5)
         return ok
 
-    def gripper(self, pos, label=''):
+    def gripper(self, pos, label='', release=None):
+        """Command the jaws to `pos`.
+
+        `release` overrides the automatic detach-on-open below. Left None it
+        keeps the rule every existing call site relies on -- opening at all,
+        while welded, releases the box. Pass False for a move that opens the
+        jaws WITHOUT meaning "let go": the only such move is settling them onto
+        the box faces right after the weld (see attach_box), which is an opening
+        motion by position but the exact opposite of a release by intent.
+        """
         self.get_logger().info(f'[gripper] -> {pos} {label}')
-        release = pos > GRIP_CLOSED and self._attached_color
+        if release is None:
+            release = pos > GRIP_CLOSED and self._attached_color
         m = JointTrajectory()
         m.joint_names = GRIPPER_JOINTS
         pt = JointTrajectoryPoint()
@@ -522,11 +555,13 @@ class PickAndPlace(Node):
         # every call site (place, release-after-failed-carry, the open before a
         # fresh grab) instead of relying on each to remember. Order matters: a
         # welded box shares the robot's articulation, so box/finger collision is
-        # off and the closed jaws sit INSIDE the box. Detaching first would hand
-        # the physics engine two interpenetrating bodies and let it fire the box
-        # out sideways; opening first clears the fingers (0.03 > the box's
-        # 0.0225 half-width) so the box simply drops the last millimetre onto
-        # the column when the weld goes.
+        # off. Detaching first would risk handing the physics engine two
+        # interpenetrating bodies and letting it fire the box out sideways;
+        # opening first clears the fingers (GRIP_OPEN 0.038 > the box's 0.030
+        # half-width) so the box simply drops the last millimetre onto the
+        # column when the weld goes. (The jaws no longer sit deep inside the box
+        # by this point -- attach_box settles them onto its faces -- but they
+        # are still touching it, so the ordering still matters.)
         if release:
             self.detach_box(log_label=f'on gripper open ({label})')
 
